@@ -1,0 +1,56 @@
+[project]
+name = "autounzip"
+version = "0.1.0"
+description = "自动解压工具 - 简单版，负责处理命令行参数并调用相应的分析和解压功能"
+readme = "README.md"
+requires-python = ">=3.11"
+authors = [
+    {name = "PackU", email = "packu@example.com"}
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+]
+dependencies = [
+    "rich>=13.3.0",
+    "loguru>=0.7.0",
+    "pyperclip>=1.8.2",
+    "PresetUI @ git+https://github.com/HibernalGlow/PresetUI.git",
+    "TextualLog @ git+https://github.com/HibernalGlow/TextualLog.git",
+    "tqdm>=4.67.1",
+    "rarfile>=4.2",
+    "py7zr>=0.22.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0.0",
+    "black>=23.0.0",
+    "isort>=5.12.0",
+    "mypy>=1.0.0",
+]
+
+[project.urls]
+"Homepage" = "https://github.com/HibernalGlow/autounzip"
+"Bug Tracker" = "https://github.com/HibernalGlow/autounzip/issues"
+
+[project.scripts]
+autounzip = "autounzip.__main__:main"
+[tool.setuptools]
+packages = ["autounzip"]
+package-dir = {"" = "src"}
+[build-system]
+requires = ["setuptools>=61.0.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.black]
+line-length = 88
+target-version = ["py311"]
+include = '\.pyi?$'
+
+[tool.isort]
+profile = "black"
+line_length = 88
