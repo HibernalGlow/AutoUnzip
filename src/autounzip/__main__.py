@@ -344,12 +344,12 @@ def run_with_params(params: Dict[str, Any]) -> int:
                 return 1
         else:
             logger.info("用户取消了解压操作")
-            console.print("[yellow]已取消解压操作[/yellow]")
+            console.print("[yellow]已取消解压操作[/yellow]")            
             return 0
             
     except KeyboardInterrupt:
         console.print("\n[yellow]程序被用户中断[/yellow]")
-        return 1
+        return 0
     except Exception as e:
         console.print(f"[red]程序运行时出错: {str(e)}[/red]")
         import traceback
@@ -368,17 +368,20 @@ def main():
         # 检查是否应该使用配置界面
         if config_manager.should_use_config_app():
             # 启动配置界面
-            params = config_manager.launch_config_app()
+            params = config_manager.launch_config_app()            
             if params:
-                return run_with_params(params)
+                    return run_with_params(params)
             else:
-                console.print("[yellow]已取消操作[/yellow]")
-                return 0
+                    console.print("[yellow]已取消操作[/yellow]")
+                    return 0
         else:
             # 使用命令行参数
             params = config_manager.parse_command_line()
             return run_with_params(params)
         
+    except KeyboardInterrupt:
+        console.print("\n[yellow]程序被用户中断[/yellow]")
+        return 0
     except Exception as e:
         console.print(f"[red]程序运行时出错: {str(e)}[/red]")
         import traceback
