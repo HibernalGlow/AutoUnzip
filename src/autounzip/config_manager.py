@@ -1,0 +1,233 @@
+#!/usr/bin/env python
+"""
+配置管理器 - 处理AutoUnzip的配置和参数
+
+负责处理命令行参数、配置文件和配置界面。
+"""
+
+import os
+import sys
+import argparse
+import json
+from pathlib import Path
+from typing import Dict, List, Any, Optional, Union
+
+# 导入Rich库
+from rich.console import Console
+from rich.prompt import Confirm
+
+# 导入预设模块
+try:
+    from textual_logger import TextualLoggerManager
+except ImportError:
+    pass
+
+try:
+    # 导入预设配置界面支持，优先使用rich_preset
+    try:
+        from rich_preset import create_config_app
+    except ImportError:
+        try:
+            from textual_preset import create_config_app
+        except ImportError:
+            create_config_app = None
+except ImportError:
+    create_config_app = None
+
+# 剪贴板支持
+try:
+    import pyperclip
+except ImportError:
+    pyperclip = None
+
+# 创建控制台
+console = Console()
+
+# 配置常量
+USE_RICH = True  # 默认使用Rich界面
+EXTRACT_PARALLEL = True  # 默认并行解压
+
+class ConfigManager:
+    """配置管理器，处理命令行参数和配置界面"""
+    
+    def __init__(self):
+        """初始化配置管理器"""
+        self.parser = self.create_arg_parser()
+        self.preset_configs = self.get_preset_configs()
+    
+    def create_arg_parser(self) -> argparse.ArgumentParser:
+        """创建命令行参数解析器"""
+        parser = argparse.ArgumentParser(description='文件自动解压工具')
+        
+        # 解压选项
+        parser.add_argument('--delete-after', '-d', action='store_true', 
+                           help='解压成功后删除源文件')
+        parser.add_argument('--password', '-p', type=str,
+                           help='设置解压密码')
+        
+        # 路径选项
+        parser.add_argument('--clipboard', '-c', action='store_true', 
+                           help='从剪贴板读取路径')
+        parser.add_argument('--path', type=str, 
+                           help='指定处理路径')
+        
+        # TUI选项
+        parser.add_argument('--tui', action='store_true',
+                           help='启用TUI图形配置界面')
+          # 递归选项
+        parser.add_argument('--recursive', '-r', action='store_true',
+                           help='递归处理嵌套压缩包')
+          # 并行处理
+        parser.add_argument('--no-parallel', action='store_true',
+                           help='禁用并行解压')
+        
+        # 文件夹前缀选项
+        parser.add_argument('--prefix', type=str, default='[#a]',
+                           help='解压文件夹前缀，默认为[#a]')
+        
+        # 文件格式选项
+        parser.add_argument('-f', '--formats', nargs='+', 
+                           help='文件格式筛选 (例如: jpg png avif)')
+        parser.add_argument('-i', '--include', nargs='+',
+                           help='包含的文件格式列表 (例如: jpg png)')
+        parser.add_argument('-e', '--exclude', nargs='+', 
+                           help='排除的文件格式列表 (例如: gif mp4)')
+        parser.add_argument('-t', '--type', choices=[
+                            'image', 'video', 'audio', 'document', 'code', 'archive', 'text'],
+                           help='指定要处理的文件类型 (例如: image, video)')        
+        parser.add_argument('--types', nargs='+',
+                           choices=['zip', 'cbz', 'rar', 'cbr', '7z'],
+                           help='指定要处理的压缩包格式 (例如: zip cbz)')
+        parser.add_argument('-a', '--archive-types', nargs='+',
+                           choices=['zip', 'cbz', 'rar', 'cbr', '7z'],
+                           help='指定要处理的压缩包格式，同--types (例如: zip cbz)')
+        parser.add_argument('--dzipfile', action='store_true', 
+                           help='禁用zipfile内容检查')
+        
+        return parser
+    
+    def get_preset_configs(self) -> Dict[str, Any]:
+        """获取预设配置"""
+        return {
+            "标准解压": {
+                "description": "标准解压模式(从剪贴板读取路径)",
+                "checkbox_options": ["delete_after","clipboard"],
+                "input_values": {
+                    "path": "",
+                    "password": ""
+                }
+            },
+            "递归解压": {
+                "description": "递归处理嵌套压缩包",
+                "checkbox_options": ["delete_after", "clipboard", "recursive"],
+                "input_values": {
+                    "path": "",
+                    "password": ""
+                }
+            },
+            "批量解压": {
+                "description": "批量解压多个压缩包",
+                "checkbox_options": ["delete_after", "clipboard"],
+                "input_values": {
+                    "path": "",
+                    "password": ""
+                }
+            }
+        }
+    
+    def get_path_from_clipboard(self) -> str:
+        """从剪贴板获取路径，支持多行路径，返回第一个有效路径"""
+        try:
+            if pyperclip is None:
+                console.print("[red]未安装pyperclip模块，请安装: pip install pyperclip[/red]")
+                return ""
+                
+            clipboard_content = pyperclip.paste().strip()
+            
+            if not clipboard_content:
+                console.print("[yellow]剪贴板内容为空[/yellow]")
+                return ""
+                
+            # 处理多行路径，取第一个有效路径
+            lines = clipboard_content.splitlines()
+            valid_paths = []
+            
+            for line in lines:
+                path = line.strip().strip('"').strip("'")
+                if path and os.path.exists(path):
+                    valid_paths.append(path)
+            
+            if valid_paths:
+                if len(valid_paths) > 1:
+                    console.print(f"[yellow]剪贴板包含多个路径，使用第一个有效路径: {valid_paths[0]}[/yellow]")
+                return valid_paths[0]
+            else:
+                console.print("[yellow]剪贴板内容不包含有效路径[/yellow]")
+                return ""
+        except Exception as e:
+            console.print(f"[red]从剪贴板获取路径时出错: {str(e)}[/red]")
+            return ""
+    def parse_command_line(self, args=None) -> Dict[str, Any]:
+        """解析命令行参数，返回参数字典"""
+        parsed_args = self.parser.parse_args(args)
+        
+        # 构建参数字典
+        params = {
+            'options': {
+                '--delete-after': parsed_args.delete_after,
+                '--clipboard': parsed_args.clipboard,
+                '--recursive': parsed_args.recursive,
+                '--no-parallel': getattr(parsed_args, 'no_parallel', False)
+            },
+            'inputs': {
+                '--path': parsed_args.path or '',
+                '--password': parsed_args.password or ''
+            },
+            'filters': {
+                # 文件格式过滤参数
+                '--formats': parsed_args.formats if hasattr(parsed_args, 'formats') and parsed_args.formats else [],
+                '--include': parsed_args.include if hasattr(parsed_args, 'include') and parsed_args.include else [],
+                '--exclude': parsed_args.exclude if hasattr(parsed_args, 'exclude') and parsed_args.exclude else [],
+                '--type': parsed_args.type if hasattr(parsed_args, 'type') and parsed_args.type else None,
+                # 压缩包格式过滤
+                '--archive-types': parsed_args.archive_types if hasattr(parsed_args, 'archive_types') and parsed_args.archive_types else []
+            }
+        }
+        
+        return params
+    
+    def launch_config_app(self) -> Dict[str, Any]:
+        """启动配置界面，返回用户选择的配置"""
+        if create_config_app is None:
+            console.print("[red]错误: 未找到配置界面支持模块[/red]")
+            return None
+        
+        # 使用rich_preset版本的create_config_app
+        if USE_RICH:
+            result = create_config_app(
+                program=sys.argv[0],
+                title="自动解压工具",
+                parser=self.parser,  # 使用命令行解析器自动生成选项
+                preset_configs=self.preset_configs,  # 添加预设配置
+            )
+            return result
+        else:
+            # 使用Textual版本的create_config_app
+            app = create_config_app(
+                program=sys.argv[0],
+                title="自动解压工具",
+                parser=self.parser,
+                preset_configs=self.preset_configs,
+            )
+            app.run()
+            return app
+    
+    def should_use_config_app(self, args=None) -> bool:
+        """判断是否应该使用配置界面"""
+        # 如果没有传入args，检查sys.argv
+        if args is None:
+            # 如果命令行参数为空或者明确指定--tui，使用配置界面
+            return len(sys.argv) == 1 or '--tui' in sys.argv
+        
+        # 如果传入了参数列表，检查是否包含--tui
+        return len(args) == 0 or '--tui' in args
