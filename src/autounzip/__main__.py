@@ -8,29 +8,14 @@
 import os
 import sys
 import argparse
-import logging
-import json
-import subprocess
-import warnings
-import zipfile
 from datetime import datetime
 from pathlib import Path
-from typing import List, Dict, Optional, Union, Any
-from concurrent.futures import ThreadPoolExecutor, as_completed
-from threading import Lock
-from tqdm import tqdm
-import yaml
-
+from typing import Dict, Optional, Union, Any
 # 导入Rich库用于美化输出
 from rich.console import Console
 from rich.prompt import Confirm
-from rich.panel import Panel
-from rich.logging import RichHandler
-
 # 导入预设模块
-from textual_logger import TextualLoggerManager
 # from textual_preset import create_config_app
-from rich_preset import create_config_app 
 
 # 导入剪贴板模块（如果可用）
 try:
@@ -136,12 +121,12 @@ TEXTUAL_LAYOUT = {
 
 # 导入自定义模块
 try:
-    from autounzip.archive_analyzer import analyze_archive
+    from autounzip.core.archive_analyzer import analyze_archive
 except ImportError as e:
     console.print(f"[red]无法导入archive_analyzer模块: {str(e)}[/red]")
 
 try:
-    from autounzip.zip_extractor import ZipExtractor as extractor
+    from autounzip.core.zip_extractor import ZipExtractor as extractor
 except ImportError as e:
     console.print(f"[red]无法导入zip_extractor模块: {str(e)}[/red]")
 
@@ -337,38 +322,37 @@ def run_with_params(params: Dict[str, Any]) -> int:
         use_clipboard = params['options'].get('--clipboard', False)
         recursive = params['options'].get('--recursive', False)
         no_parallel = params['options'].get('--no-parallel', False)
-        
-        # 提取新的过滤参数
+          # 提取新的过滤参数
         extract_prefix = params['inputs'].get('--prefix', '[#a]')
         format_filters = {}
+        archive_types = []  # 初始化 archive_types 变量
+          # 初始化默认值
+        archive_types = []
         
-        # 处理格式过滤参数
-        if '--formats' in params['inputs'] or '-f' in params['inputs']:
-            formats = params['inputs'].get('--formats') or params['inputs'].get('-f')
-            if formats:
-                format_filters['formats'] = formats
-        
-        if '--include' in params['inputs'] or '-i' in params['inputs']:
-            include = params['inputs'].get('--include') or params['inputs'].get('-i')
-            if include:
-                format_filters['include'] = include
+        # 处理格式过滤参数（从 filters 部分获取）
+        if 'filters' in params:
+            filters = params['filters']
+            
+            if '--formats' in filters and filters['--formats']:
+                format_filters['--formats'] = filters['--formats']
+            
+            if '--include' in filters and filters['--include']:
+                format_filters['--include'] = filters['--include']
                 
-        if '--exclude' in params['inputs'] or '-e' in params['inputs']:
-            exclude = params['inputs'].get('--exclude') or params['inputs'].get('-e')
-            if exclude:
-                format_filters['exclude'] = exclude
+            if '--exclude' in filters and filters['--exclude']:
+                format_filters['--exclude'] = filters['--exclude']
                 
-        if '--type' in params['inputs'] or '-t' in params['inputs']:
-            file_type = params['inputs'].get('--type') or params['inputs'].get('-t')
-            if file_type:
-                format_filters['type'] = file_type
-        
-        # 处理压缩包类型过滤
-        archive_types = None
-        if '--archive-types' in params['inputs'] or '-a' in params['inputs']:
-            archive_types = params['inputs'].get('--archive-types') or params['inputs'].get('-a')
+            if '--type' in filters and filters['--type']:
+                format_filters['--type'] = filters['--type']
+                
+            if '--part' in filters:
+                format_filters['--part'] = filters['--part']
+                
+            # 处理压缩包类型过滤（也在 filters 部分）
+            if '--archive-types' in filters and filters['--archive-types']:
+                archive_types = filters['--archive-types']
         elif '--types' in params['inputs']:
-            archive_types = params['inputs'].get('--types')
+            archive_types = params['inputs'].get('--types', [])or []
         
         # 获取处理路径
         if use_clipboard:
@@ -416,100 +400,28 @@ def run_with_params(params: Dict[str, Any]) -> int:
         console.print(traceback.format_exc())
         return 1
 
-def launch_tui_mode(parser: argparse.ArgumentParser) -> int:
-    """启动基于rich的配置界面"""
-    try:
-        # 注册一些默认值以提高用户体验
-        preset_configs = {
-            "标准解压": {
-                "description": "标准解压模式(从剪贴板读取路径)",
-                "checkbox_options": ["delete_after","clipboard"],
-                "input_values": {
-                    "path": "",
-                    "password": ""
-                }
-            },
-            "递归解压": {
-                "description": "递归处理嵌套压缩包",
-                "checkbox_options": ["delete_after", "clipboard", "recursive"],
-                "input_values": {
-                    "path": "",
-                    "password": ""
-                }
-            },
-            "批量解压": {
-                "description": "批量解压多个压缩包",
-                "checkbox_options": ["delete_after", "clipboard"],
-                "input_values": {
-                    "path": "",
-                    "password": ""
-                }
-            }
-        }
-        
-        # 使用rich_preset版本的create_config_app
-        if USE_RICH:
-            result = create_config_app(
-                program=sys.argv[0],
-                title="自动解压工具",
-                parser=parser,  # 使用命令行解析器自动生成选项
-                preset_configs=preset_configs,  # 添加预设配置
-            )
-            # 处理参数
-            return run_with_params(result)
-        else:
-            # 使用Textual版本的create_config_app
-            app = create_config_app(
-                program=sys.argv[0],
-                title="自动解压工具",
-                parser=parser,
-                preset_configs=preset_configs,
-            )
-            app.run()
-            return 0
-    
-    except Exception as e:
-        console.print(f"[red]启动配置界面时出错: {str(e)}[/red]")
-        import traceback
-        console.print(traceback.format_exc())
-        return 1
 
 def main():
     """主函数"""
     try:
-        # 创建命令行参数解析器
-        parser = create_arg_parser()
+        # 使用 argparse CLI 和 ConfigManager
+        from autounzip.core.config_manager import ConfigManager
         
-        # 先检查是否明确请求TUI模式
-        # 如果命令行参数为空，也默认启动TUI
-        if len(sys.argv) == 1 or '--tui' in sys.argv:
-            return launch_tui_mode(parser)
+        config_manager = ConfigManager()
         
-        # 解析命令行参数
-        args = parser.parse_args()
-          # 命令行模式 - 构建参数字典
-        params = {
-            'options': {
-                '--delete-after': args.delete_after,
-                '--clipboard': args.clipboard,
-                '--recursive': args.recursive,
-                '--no-parallel': getattr(args, 'no_parallel', False)
-            },
-            'inputs': {
-                '--path': args.path or '',
-                '--password': args.password or '',
-                '--prefix': getattr(args, 'prefix', '[#a]'),
-                '--formats': getattr(args, 'formats', None),
-                '--include': getattr(args, 'include', None),
-                '--exclude': getattr(args, 'exclude', None),
-                '--type': getattr(args, 'type', None),
-                '--archive-types': getattr(args, 'archive_types', None),
-                '--types': getattr(args, 'types', None)
-            }
-        }
-        
-        # 使用统一的处理函数
-        return run_with_params(params)
+        # 检查是否应该使用配置界面
+        if config_manager.should_use_config_app():
+            # 启动配置界面
+            params = config_manager.launch_config_app()
+            if params:
+                return run_with_params(params)
+            else:
+                console.print("[yellow]已取消操作[/yellow]")
+                return 0
+        else:
+            # 使用命令行参数
+            params = config_manager.parse_command_line()
+            return run_with_params(params)
         
     except Exception as e:
         console.print(f"[red]程序运行时出错: {str(e)}[/red]")

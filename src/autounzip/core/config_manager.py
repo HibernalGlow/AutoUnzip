@@ -59,50 +59,59 @@ class ConfigManager:
         """创建命令行参数解析器"""
         parser = argparse.ArgumentParser(description='文件自动解压工具')
         
+        # 位置参数 - 目标路径
+        parser.add_argument('target_path', nargs='?', 
+                           help='要处理的文件或目录路径')
+        
         # 解压选项
         parser.add_argument('--delete-after', '-d', action='store_true', 
                            help='解压成功后删除源文件')
         parser.add_argument('--password', '-p', type=str,
                            help='设置解压密码')
+        parser.add_argument('--prefix', type=str, default='[#a]',
+                           help='解压文件夹前缀，默认为[#a]')
         
         # 路径选项
         parser.add_argument('--clipboard', '-c', action='store_true', 
                            help='从剪贴板读取路径')
         parser.add_argument('--path', type=str, 
-                           help='指定处理路径')
+                           help='指定处理路径（与位置参数二选一）')
         
         # TUI选项
         parser.add_argument('--tui', action='store_true',
                            help='启用TUI图形配置界面')
-          # 递归选项
+        
+        # 递归和并行选项
         parser.add_argument('--recursive', '-r', action='store_true',
                            help='递归处理嵌套压缩包')
-          # 并行处理
         parser.add_argument('--no-parallel', action='store_true',
                            help='禁用并行解压')
         
-        # 文件夹前缀选项
-        parser.add_argument('--prefix', type=str, default='[#a]',
-                           help='解压文件夹前缀，默认为[#a]')
-        
-        # 文件格式选项
-        parser.add_argument('-f', '--formats', nargs='+', 
-                           help='文件格式筛选 (例如: jpg png avif)')
+        # 文件过滤选项
+        parser.add_argument('--types', '-t', nargs='+',
+                           choices=['image', 'video', 'audio', 'document', 'code', 'archive', 'text'],
+                           help='指定要处理的文件类型，配合 -i/-e 使用，默认为包含模式')
         parser.add_argument('-i', '--include', nargs='+',
-                           help='包含的文件格式列表 (例如: jpg png)')
+                           help='包含模式：指定要包含的文件扩展名（不带点号）')
         parser.add_argument('-e', '--exclude', nargs='+', 
-                           help='排除的文件格式列表 (例如: gif mp4)')
-        parser.add_argument('-t', '--type', choices=[
-                            'image', 'video', 'audio', 'document', 'code', 'archive', 'text'],
-                           help='指定要处理的文件类型 (例如: image, video)')        
-        parser.add_argument('--types', nargs='+',
-                           choices=['zip', 'cbz', 'rar', 'cbr', '7z'],
-                           help='指定要处理的压缩包格式 (例如: zip cbz)')
+                           help='排除模式：指定要排除的文件扩展名（不带点号）')
+        
+        # 压缩包类型过滤
         parser.add_argument('-a', '--archive-types', nargs='+',
-                           choices=['zip', 'cbz', 'rar', 'cbr', '7z'],
-                           help='指定要处理的压缩包格式，同--types (例如: zip cbz)')
+                           choices=['zip', 'rar', '7z', 'tar', 'cbz', 'cbr'],
+                           help='指定要处理的压缩包格式')
+        
+        # 处理模式
+        parser.add_argument('--part', action='store_true',
+                           help='启用部分解压模式：只提取符合过滤条件的文件，而不是跳过整个压缩包')
+        
+        # 其他选项
         parser.add_argument('--dzipfile', action='store_true', 
                            help='禁用zipfile内容检查')
+        
+        # 保留旧的参数用于兼容性
+        parser.add_argument('-f', '--formats', nargs='+', 
+                           help='文件格式筛选 (例如: jpg png avif)')
         
         return parser
     
@@ -167,9 +176,13 @@ class ConfigManager:
         except Exception as e:
             console.print(f"[red]从剪贴板获取路径时出错: {str(e)}[/red]")
             return ""
+    
     def parse_command_line(self, args=None) -> Dict[str, Any]:
         """解析命令行参数，返回参数字典"""
         parsed_args = self.parser.parse_args(args)
+        
+        # 处理路径参数 - 位置参数优先于--path选项
+        target_path = getattr(parsed_args, 'target_path', None) or parsed_args.path or ''
         
         # 构建参数字典
         params = {
@@ -177,20 +190,22 @@ class ConfigManager:
                 '--delete-after': parsed_args.delete_after,
                 '--clipboard': parsed_args.clipboard,
                 '--recursive': parsed_args.recursive,
-                '--no-parallel': getattr(parsed_args, 'no_parallel', False)
+                '--no-parallel': getattr(parsed_args, 'no_parallel', False),
+                '--part': getattr(parsed_args, 'part', False),
+                '--dzipfile': getattr(parsed_args, 'dzipfile', False)
             },
             'inputs': {
-                '--path': parsed_args.path or '',
-                '--password': parsed_args.password or ''
+                '--path': target_path,
+                '--password': parsed_args.password or '',
+                '--prefix': getattr(parsed_args, 'prefix', '[#a]')
             },
             'filters': {
-                # 文件格式过滤参数
-                '--formats': parsed_args.formats if hasattr(parsed_args, 'formats') and parsed_args.formats else [],
-                '--include': parsed_args.include if hasattr(parsed_args, 'include') and parsed_args.include else [],
-                '--exclude': parsed_args.exclude if hasattr(parsed_args, 'exclude') and parsed_args.exclude else [],
-                '--type': parsed_args.type if hasattr(parsed_args, 'type') and parsed_args.type else None,
-                # 压缩包格式过滤
-                '--archive-types': parsed_args.archive_types if hasattr(parsed_args, 'archive_types') and parsed_args.archive_types else []
+                '--types': getattr(parsed_args, 'types', None) or [],
+                '--include': getattr(parsed_args, 'include', None) or [],
+                '--exclude': getattr(parsed_args, 'exclude', None) or [],
+                '--formats': getattr(parsed_args, 'formats', None) or [],
+                '--archive-types': getattr(parsed_args, 'archive_types', None) or [],
+                '--part': getattr(parsed_args, 'part', False)
             }
         }
         

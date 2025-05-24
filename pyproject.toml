@@ -21,8 +21,6 @@ dependencies = [
     "PresetUI @ git+https://github.com/HibernalGlow/PresetUI.git",
     "TextualLog @ git+https://github.com/HibernalGlow/TextualLog.git",
     "tqdm>=4.67.1",
-    "rarfile>=4.2",
-    "py7zr>=0.22.0",
 ]
 
 [project.optional-dependencies]

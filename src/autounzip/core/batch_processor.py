@@ -14,8 +14,8 @@ from rich.console import Console
 from rich.prompt import Confirm
 
 # 导入自定义模块
-from autounzip.archive_analyzer import analyze_archive
-from autounzip.zip_extractor import ZipExtractor, ExtractionResult
+from autounzip.core.archive_analyzer import analyze_archive
+from autounzip.core.zip_extractor import ZipExtractor, ExtractionResult
 
 # 设置Rich控制台
 console = Console()
@@ -109,7 +109,7 @@ class BatchProcessor:
             no_parallel = params['options'].get('--no-parallel', False)
             
             # 导入配置管理器
-            from autounzip.config_manager import ConfigManager
+            from autounzip.core.config_manager import ConfigManager
             config_manager = ConfigManager()
             
             # 获取处理路径

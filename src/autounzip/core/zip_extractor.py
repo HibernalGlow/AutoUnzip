@@ -35,7 +35,7 @@ from rich.live import Live
 console = Console()
 
 # 导入ArchiveInfo类型
-from autounzip.archive_analyzer import ArchiveInfo, EXTRACT_MODE_ALL, EXTRACT_MODE_SELECTIVE, EXTRACT_MODE_SKIP
+from autounzip.core.archive_analyzer import ArchiveInfo, EXTRACT_MODE_ALL, EXTRACT_MODE_SELECTIVE, EXTRACT_MODE_SKIP
 
 # 解压结果类型
 @dataclass
@@ -134,11 +134,11 @@ class ExtractionTracker:
 
 class ZipExtractor:
     """压缩包解压器，支持多种压缩格式"""
-    
     def __init__(self):
         """初始化解压器"""
         self.progress = None
         self.tracker = None
+        self.filter_config = {}  # 存储过滤配置
         self._setup_progress()
     
     def _setup_progress(self) -> None:
@@ -166,6 +166,9 @@ class ZipExtractor:
         except Exception as e:
             console.print(f"[red]读取配置文件出错: {str(e)}[/red]")
             return []
+        
+        # 提取过滤条件（如果存在）
+        self.filter_config = config.get("filter_config", {})
         
         # 获取待解压的压缩包列表
         archives = config.get("archives", [])
@@ -227,14 +230,15 @@ class ZipExtractor:
                 if extract_mode == EXTRACT_MODE_SKIP:
                     console.print(f"[yellow]跳过解压: {os.path.basename(archive_path)}[/yellow]")
                     continue
-                
-                # 执行解压
+                  # 执行解压
                 try:
                     start_time = time.time()
                     result = self._extract_archive(
                         archive_path=archive_path,
                         target_path=extract_path,
-                        password=password
+                        password=password,
+                        extract_mode=extract_mode,
+                        archive_config=archive_config
                     )
                     elapsed_time = time.time() - start_time
                     
@@ -263,213 +267,45 @@ class ZipExtractor:
                     console.print(f"[red]解压出错: {str(e)}[/red]")
                     results.append(ExtractionResult(
                         archive_path=archive_path,
-                        target_path=extract_path,
-                        success=False,
+                        target_path=extract_path,                        success=False,
                         error_message=str(e)
                     ))
         
         return results
     
-    def _extract_archive(self, archive_path: str, target_path: str, password: str = "") -> Tuple[bool, int, str]:
-        """解压单个压缩包，返回(成功标志, 解压文件数, 错误信息)"""
+    def _extract_archive(self, archive_path: str, target_path: str, password: str = "", extract_mode: str = EXTRACT_MODE_ALL, archive_config: dict = None) -> Tuple[bool, int, str]:
+        """解压单个压缩包，使用7z命令统一处理所有格式，返回(成功标志, 解压文件数, 错误信息)"""
         # 确保目标目录存在
         os.makedirs(target_path, exist_ok=True)
         
-        # 根据文件扩展名选择解压方法
-        ext = os.path.splitext(archive_path.lower())[1]
-        
+        # 统一使用7z命令解压
         try:
-            if ext == '.zip' or ext == '.cbz':
-                return self._extract_zip(archive_path, target_path, password)
-            elif ext == '.rar' or ext == '.cbr':
-                return self._extract_rar(archive_path, target_path, password)
-            elif ext == '.7z' or ext == '.cb7':
-                return self._extract_7z(archive_path, target_path, password)
-            elif ext in ['.tar', '.tgz', '.tar.gz', '.tar.bz2', '.tar.xz']:
-                return self._extract_tar(archive_path, target_path)
-            else:
-                return False, 0, f"不支持的压缩格式: {ext}"
+            return self._extract_with_7zip_selective(archive_path, target_path, password, extract_mode, archive_config)
         except Exception as e:
             return False, 0, str(e)
     
-    def _extract_zip(self, zip_path: str, target_path: str, password: str = "") -> Tuple[bool, int, str]:
-        """解压ZIP文件"""
+    def _extract_with_7zip_selective(self, archive_path: str, target_path: str, password: str = "", extract_mode: str = EXTRACT_MODE_ALL, archive_config: dict = None) -> Tuple[bool, int, str]:
+        """使用7zip命令行工具解压文件，支持选择性解压"""
         try:
-            with zipfile.ZipFile(zip_path, 'r') as zip_file:
-                # 获取文件列表
-                file_list = zip_file.namelist()
-                
-                # 如果需要密码
-                if password:
-                    pwd = password.encode('utf-8')  # zipfile需要bytes类型的密码
-                else:
-                    pwd = None
-                
-                # 解压所有文件
-                for i, file_name in enumerate(file_list):
-                    # 更新进度
-                    self.progress.update(
-                        self.tracker.file_task_id,
-                        description=f"[green]解压: {file_name}[/]",
-                        completed=int((i+1) / len(file_list) * 100)
-                    )
-                    
-                    try:
-                        zip_file.extract(file_name, target_path, pwd=pwd)
-                    except zipfile.BadZipFile as e:
-                        console.print(f"[yellow]解压文件出错: {file_name} - {str(e)}[/yellow]")
-                
-                return True, len(file_list), ""
-        
-        except zipfile.BadZipFile as e:
-            console.print(f"[red]损坏的ZIP文件: {str(e)}[/red]")
-            return False, 0, f"损坏的ZIP文件: {str(e)}"
-        except Exception as e:
-            console.print(f"[red]解压ZIP文件出错: {str(e)}[/red]")
-            return False, 0, str(e)
-    
-    def _extract_rar(self, rar_path: str, target_path: str, password: str = "") -> Tuple[bool, int, str]:
-        """解压RAR文件"""
-        try:
-            with rarfile.RarFile(rar_path) as rar_file:
-                # 获取文件列表
-                file_list = rar_file.namelist()
-                
-                # 如果需要密码
-                if password:
-                    rar_file.setpassword(password)
-                
-                # 解压所有文件
-                for i, file_name in enumerate(file_list):
-                    # 更新进度
-                    self.progress.update(
-                        self.tracker.file_task_id,
-                        description=f"[green]解压: {file_name}[/]",
-                        completed=int((i+1) / len(file_list) * 100)
-                    )
-                    
-                    try:
-                        rar_file.extract(file_name, target_path)
-                    except Exception as e:
-                        console.print(f"[yellow]解压文件出错: {file_name} - {str(e)}[/yellow]")
-                
-                return True, len(file_list), ""
-        
-        except rarfile.BadRarFile as e:
-            console.print(f"[red]损坏的RAR文件: {str(e)}[/red]")
-            return False, 0, f"损坏的RAR文件: {str(e)}"
-        except rarfile.PasswordRequired:
-            console.print(f"[red]RAR文件需要密码[/red]")
-            return False, 0, "RAR文件需要密码"
-        except Exception as e:
-            console.print(f"[red]解压RAR文件出错: {str(e)}[/red]")
-            return False, 0, str(e)
-    
-    def _extract_7z(self, sz_path: str, target_path: str, password: str = "") -> Tuple[bool, int, str]:
-        """解压7Z文件"""
-        try:
-            # 如果需要密码
-            if password:
-                with py7zr.SevenZipFile(sz_path, mode='r', password=password) as sz_file:
-                    # 获取文件列表
-                    file_list = sz_file.getnames()
-                    
-                    # 更新进度
-                    self.progress.update(
-                        self.tracker.file_task_id,
-                        description=f"[green]解压7Z文件...[/]",
-                        completed=0
-                    )
-                    
-                    # 解压所有文件
-                    sz_file.extractall(target_path)
-                    
-                    # 完成进度
-                    self.progress.update(
-                        self.tracker.file_task_id,
-                        description=f"[green]7Z解压完成[/]",
-                        completed=100
-                    )
-                    
-                    return True, len(file_list), ""
-            else:
-                with py7zr.SevenZipFile(sz_path, mode='r') as sz_file:
-                    # 获取文件列表
-                    file_list = sz_file.getnames()
-                    
-                    # 更新进度
-                    self.progress.update(
-                        self.tracker.file_task_id,
-                        description=f"[green]解压7Z文件...[/]",
-                        completed=0
-                    )
-                    
-                    # 解压所有文件
-                    sz_file.extractall(target_path)
-                    
-                    # 完成进度
-                    self.progress.update(
-                        self.tracker.file_task_id,
-                        description=f"[green]7Z解压完成[/]",
-                        completed=100
-                    )
-                    
-                    return True, len(file_list), ""
-        
-        except py7zr.Bad7zFile as e:
-            console.print(f"[red]损坏的7Z文件: {str(e)}[/red]")
-            return False, 0, f"损坏的7Z文件: {str(e)}"
-        except py7zr.PasswordRequired:
-            console.print(f"[red]7Z文件需要密码[/red]")
-            return False, 0, "7Z文件需要密码"
-        except Exception as e:
-            console.print(f"[red]解压7Z文件出错: {str(e)}[/red]")
-            return False, 0, str(e)
-    
-    def _extract_tar(self, tar_path: str, target_path: str) -> Tuple[bool, int, str]:
-        """解压TAR文件"""
-        try:
-            with tarfile.open(tar_path) as tar_file:
-                # 获取文件列表
-                file_list = tar_file.getnames()
-                
-                # 更新进度
-                self.progress.update(
-                    self.tracker.file_task_id,
-                    description=f"[green]解压TAR文件...[/]",
-                    completed=0
-                )
-                
-                # 解压所有文件
-                tar_file.extractall(target_path)
-                
-                # 完成进度
-                self.progress.update(
-                    self.tracker.file_task_id,
-                    description=f"[green]TAR解压完成[/]",
-                    completed=100
-                )
-                
-                return True, len(file_list), ""
-        
-        except tarfile.ReadError as e:
-            console.print(f"[red]损坏的TAR文件: {str(e)}[/red]")
-            return False, 0, f"损坏的TAR文件: {str(e)}"
-        except Exception as e:
-            console.print(f"[red]解压TAR文件出错: {str(e)}[/red]")
-            return False, 0, str(e)
-    
-    def _extract_with_7zip(self, archive_path: str, target_path: str, password: str = "") -> Tuple[bool, int, str]:
-        """使用7zip命令行工具解压文件（备选方法）"""
-        try:
-            # 构建命令
+            # 构建基础命令
             cmd = ["7z", "x", f"-o{target_path}", archive_path, "-y"]
             
             # 如果需要密码
             if password:
                 cmd.append(f"-p{password}")
             
+            # 检查是否需要选择性解压
+            if extract_mode == EXTRACT_MODE_SELECTIVE:
+                wildcards = self._generate_7z_wildcards()
+                if wildcards:
+                    console.print(f"[blue]部分解压模式，过滤规则: {', '.join(wildcards)}[/blue]")
+                    # 添加通配符到命令
+                    cmd.extend(wildcards)
+                else:
+                    console.print("[yellow]选择性解压模式但无过滤条件，将解压所有文件[/yellow]")
+            
             # 执行命令
+            console.print(f"[cyan]执行命令: {' '.join(cmd)}[/cyan]")
             process = subprocess.Popen(
                 cmd,
                 stdout=subprocess.PIPE,
@@ -482,47 +318,70 @@ class ZipExtractor:
             extracted_files = 0
             for line in process.stdout:
                 line = line.strip()
+                console.print(f"[dim]{line}[/dim]")  # 显示7z输出以便调试
                 
                 # 更新进度
                 self.tracker.update_from_output(line)
                 
                 # 统计解压的文件数
-                if "Extracting" in line:
+                if "Extracting" in line or "- " in line:
                     extracted_files += 1
             
             # 等待进程结束
             return_code = process.wait()
             
             if return_code == 0:
+                console.print(f"[green]解压完成，共提取 {extracted_files} 个文件[/green]")
                 return True, extracted_files, ""
             else:
-                return False, extracted_files, f"7zip返回错误代码: {return_code}"
+                error_msg = f"7zip返回错误代码: {return_code}"
+                console.print(f"[red]{error_msg}[/red]")
+                return False, extracted_files, error_msg
         
         except Exception as e:
-            console.print(f"[red]执行7zip命令出错: {str(e)}[/red]")
-            return False, 0, str(e)
-
-
-if __name__ == "__main__":
-    # 简单的命令行测试
-    import argparse
-    parser = argparse.ArgumentParser(description='从JSON配置解压文件')
-    parser.add_argument('config', help='JSON配置文件路径')
-    parser.add_argument('-d', '--delete', action='store_true', help='解压成功后删除源文件')
+            error_msg = f"执行7zip命令出错: {str(e)}"
+            console.print(f"[red]{error_msg}[/red]")
+            return False, 0, error_msg
     
-    args = parser.parse_args()
+    def _should_extract_file(self, file_path: str) -> bool:
+        """根据过滤条件判断是否应该解压指定文件"""
+        if not self.filter_config:
+            return True
+            
+        # 导入FilterManager进行文件过滤判断
+        from ..analyzers.filter_manager import FilterManager
+        filter_manager = FilterManager(self.filter_config)
+        
+        # 检查是否为部分解压模式
+        if not filter_manager.is_part_mode_enabled():
+            return True
+            
+        # 文件级别过滤：如果文件不符合条件则跳过
+        return not filter_manager.should_filter_file(file_path)
     
-    # 创建解压器并执行解压
-    extractor = ZipExtractor()
-    results = extractor.extract_from_json(args.config, delete_after_success=args.delete)
+    def _generate_7z_wildcards(self) -> List[str]:
+        """根据过滤条件生成7z通配符模式"""
+        if not self.filter_config:
+            return []
+            
+        from ..analyzers.filter_manager import FilterManager
+        filter_manager = FilterManager(self.filter_config)
+        
+        # 如果不是部分解压模式，返回空列表
+        if not filter_manager.is_part_mode_enabled():
+            return []
+            
+        wildcards = []
+        include_formats = self.filter_config.get('--include', [])
+        exclude_formats = self.filter_config.get('--exclude', [])
+        
+        # 生成包含模式的通配符
+        if include_formats:
+            for ext in include_formats:
+                # 移除点号前缀（如果存在）
+                clean_ext = ext.lstrip('.')
+                wildcards.append(f"*.{clean_ext}")
+        
+        # 注意：7z的排除模式需要特殊处理，这里先实现包含模式
+        return wildcards
     
-    # 输出结果
-    success_count = sum(1 for r in results if r.success)
-    fail_count = len(results) - success_count
-    
-    console.print(f"\n[green]成功解压: {success_count} 个压缩包[/green]")
-    if fail_count > 0:
-        console.print(f"[red]解压失败: {fail_count} 个压缩包[/red]")
-        for result in results:
-            if not result.success:
-                console.print(f"[red]  - {os.path.basename(result.archive_path)}: {result.error_message}[/red]")
