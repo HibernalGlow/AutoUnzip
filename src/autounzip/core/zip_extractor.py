@@ -306,14 +306,18 @@ class ZipExtractor:
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 text=True,
-                universal_newlines=True
+                universal_newlines=True,
+                # Redirect stderr to stdout to capture all output
+                # Use bufsize=1 for line buffering
+                bufsize=1,
+                # Make sure we don't use the actual terminal
+                stdin=subprocess.DEVNULL
             )
-            
-            # 跟踪进度
+              # 跟踪进度
             extracted_files = 0
             for line in process.stdout:
                 line = line.strip()
-                console.print(f"[dim]{line}[/dim]")  # 显示7z输出以便调试
+                # console.print(f"[dim]{line}[/dim]")  # 隐藏7z输出
                 
                 # 更新进度
                 self.tracker.update_from_output(line)

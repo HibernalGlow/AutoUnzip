@@ -67,10 +67,11 @@ class ConfigManager:
         parser.add_argument('--clipboard', '-c', action='store_true', 
                            help='从剪贴板读取路径')
         parser.add_argument('--path', type=str, 
-                           help='指定处理路径（与位置参数二选一）')
-        # TUI选项
+                           help='指定处理路径（与位置参数二选一）')        # TUI选项
         parser.add_argument('--tui', action='store_true',
                            help='启用TUI图形配置界面')
+        parser.add_argument('--exit', action='store_true',
+                           help='直接退出程序，返回码为0')
         
         # 递归和并行选项
         parser.add_argument('--recursive', '-r', action='store_true',
@@ -117,6 +118,10 @@ class ConfigManager:
             "无前缀解压": {
                 "description": "无前缀解压模式",
                 "checkbox_options": ["delete_after","clipboard"],
+            },       
+            "安全退出": {
+                "description": "安全退出模式",
+                "checkbox_options": ["exit"],
             },        
             }
 
@@ -152,10 +157,14 @@ class ConfigManager:
         except Exception as e:
             console.print(f"[red]从剪贴板获取路径时出错: {str(e)}[/red]")
             return ""
-    
     def parse_command_line(self, args=None) -> Dict[str, Any]:
         """解析命令行参数，返回参数字典"""
         parsed_args = self.parser.parse_args(args)
+        
+        # 处理 --exit 参数
+        if getattr(parsed_args, 'exit', False):
+            console.print("[green]程序正常退出[/green]")
+            sys.exit(0)
         
         # 处理路径参数 - 位置参数优先于--path选项
         target_path = getattr(parsed_args, 'target_path', None) or parsed_args.path or ''
@@ -211,13 +220,19 @@ class ConfigManager:
             )
             app.run()
             return app
-    
     def should_use_config_app(self, args=None) -> bool:
         """判断是否应该使用配置界面"""
         # 如果没有传入args，检查sys.argv
         if args is None:
+            # 检查是否有 --exit 参数
+            if '--exit' in sys.argv:
+                console.print("[green]程序正常退出[/green]")
+                sys.exit(0)
             # 如果命令行参数为空或者明确指定--tui，使用配置界面
             return len(sys.argv) == 1 or '--tui' in sys.argv
         
-        # 如果传入了参数列表，检查是否包含--tui
+        # 如果传入了参数列表，检查是否包含--tui或--exit
+        if '--exit' in args:
+            console.print("[green]程序正常退出[/green]")
+            sys.exit(0)
         return len(args) == 0 or '--tui' in args
