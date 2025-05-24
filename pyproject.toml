@@ -19,7 +19,6 @@ dependencies = [
     "loguru>=0.7.0",
     "pyperclip>=1.8.2",
     "PresetUI @ git+https://github.com/HibernalGlow/PresetUI.git",
-    "TextualLog @ git+https://github.com/HibernalGlow/TextualLog.git",
     "tqdm>=4.67.1",
 ]
 

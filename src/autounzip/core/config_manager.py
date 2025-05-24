@@ -22,17 +22,12 @@ try:
 except ImportError:
     pass
 
-try:
-    # 导入预设配置界面支持，优先使用rich_preset
-    try:
-        from rich_preset import create_config_app
-    except ImportError:
-        try:
-            from textual_preset import create_config_app
-        except ImportError:
-            create_config_app = None
-except ImportError:
-    create_config_app = None
+# 导入预设配置界面支持，优先使用rich_preset
+
+from rich_preset import create_config_app
+
+# from textual_preset import create_config_app 
+
 
 # 剪贴板支持
 try:
@@ -66,17 +61,13 @@ class ConfigManager:
         # 解压选项
         parser.add_argument('--delete-after', '-d', action='store_true', 
                            help='解压成功后删除源文件')
-        parser.add_argument('--password', '-p', type=str,
-                           help='设置解压密码')
-        parser.add_argument('--prefix', type=str, default='[#a]',
+        parser.add_argument('--prefix', type=str,
                            help='解压文件夹前缀，默认为[#a]')
-        
         # 路径选项
         parser.add_argument('--clipboard', '-c', action='store_true', 
                            help='从剪贴板读取路径')
         parser.add_argument('--path', type=str, 
                            help='指定处理路径（与位置参数二选一）')
-        
         # TUI选项
         parser.add_argument('--tui', action='store_true',
                            help='启用TUI图形配置界面')
@@ -86,7 +77,16 @@ class ConfigManager:
                            help='递归处理嵌套压缩包')
         parser.add_argument('--no-parallel', action='store_true',
                            help='禁用并行解压')
+        parser.add_argument('--part', action='store_true',
+                           help='启用部分解压模式：只提取符合过滤条件的文件，而不是跳过整个压缩包')
         
+        # 其他选项
+        parser.add_argument('--dzipfile', action='store_true', 
+                           help='禁用zipfile内容检查')
+        
+        # 保留旧的参数用于兼容性
+        parser.add_argument('-f', '--formats', nargs='+', 
+                           help='文件格式筛选 (例如: jpg png avif)')
         # 文件过滤选项
         parser.add_argument('--types', '-t', nargs='+',
                            choices=['image', 'video', 'audio', 'document', 'code', 'archive', 'text'],
@@ -102,48 +102,27 @@ class ConfigManager:
                            help='指定要处理的压缩包格式')
         
         # 处理模式
-        parser.add_argument('--part', action='store_true',
-                           help='启用部分解压模式：只提取符合过滤条件的文件，而不是跳过整个压缩包')
-        
-        # 其他选项
-        parser.add_argument('--dzipfile', action='store_true', 
-                           help='禁用zipfile内容检查')
-        
-        # 保留旧的参数用于兼容性
-        parser.add_argument('-f', '--formats', nargs='+', 
-                           help='文件格式筛选 (例如: jpg png avif)')
         
         return parser
-    
     def get_preset_configs(self) -> Dict[str, Any]:
         """获取预设配置"""
         return {
             "标准解压": {
-                "description": "标准解压模式(从剪贴板读取路径)",
+                "description": "标准解压模式",
                 "checkbox_options": ["delete_after","clipboard"],
                 "input_values": {
-                    "path": "",
-                    "password": ""
+                    "prefix": "[#a]"
                 }
             },
-            "递归解压": {
-                "description": "递归处理嵌套压缩包",
-                "checkbox_options": ["delete_after", "clipboard", "recursive"],
+            "无前缀解压": {
+                "description": "无前缀解压模式",
+                "checkbox_options": ["delete_after","clipboard"],
                 "input_values": {
-                    "path": "",
-                    "password": ""
-                }
-            },
-            "批量解压": {
-                "description": "批量解压多个压缩包",
-                "checkbox_options": ["delete_after", "clipboard"],
-                "input_values": {
-                    "path": "",
-                    "password": ""
+                    "prefix": ""
                 }
             }
         }
-    
+
     def get_path_from_clipboard(self) -> str:
         """从剪贴板获取路径，支持多行路径，返回第一个有效路径"""
         try:
@@ -196,7 +175,6 @@ class ConfigManager:
             },
             'inputs': {
                 '--path': target_path,
-                '--password': parsed_args.password or '',
                 '--prefix': getattr(parsed_args, 'prefix', '[#a]')
             },
             'filters': {

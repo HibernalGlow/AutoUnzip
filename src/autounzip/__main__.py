@@ -180,7 +180,7 @@ def create_arg_parser():
                        help='禁用并行解压')
     
     # 文件夹前缀选项
-    parser.add_argument('--prefix', type=str, default='[#a]',
+    parser.add_argument('--prefix', type=str, default='[A]',
                        help='解压文件夹前缀，默认为[#a]')
     
     # 文件格式选项
@@ -315,22 +315,28 @@ def extract_archives(config_path: Union[str, Path], delete_after: bool = False) 
 def run_with_params(params: Dict[str, Any]) -> int:
     """使用参数运行程序"""
     try:
+        # 检查params是否是rich_preset返回的特殊对象
+        if hasattr(params, 'result'):
+            # 这是一个ConfigResult对象，使用.result获取原始字典
+            params = params.result
+        
         # 从参数中提取值
-        delete_after = params['options'].get('--delete-after', False)
-        folder_path = params['inputs'].get('--path', '')
-        password = params['inputs'].get('--password', '')
-        use_clipboard = params['options'].get('--clipboard', False)
-        recursive = params['options'].get('--recursive', False)
-        no_parallel = params['options'].get('--no-parallel', False)
+        delete_after = params.get('options', {}).get('--delete-after', False)
+        folder_path = params.get('inputs', {}).get('--path', '')
+        password = params.get('inputs', {}).get('--password', '')
+        use_clipboard = params.get('options', {}).get('--clipboard', False)
+        recursive = params.get('options', {}).get('--recursive', False)
+        no_parallel = params.get('options', {}).get('--no-parallel', False)
           # 提取新的过滤参数
-        extract_prefix = params['inputs'].get('--prefix', '[#a]')
+        extract_prefix = params.get('inputs', {}).get('--prefix', '[#a]')
         format_filters = {}
         archive_types = []  # 初始化 archive_types 变量
           # 初始化默认值
         archive_types = []
         
         # 处理格式过滤参数（从 filters 部分获取）
-        if 'filters' in params:
+        filters = params.get('filters', {})
+        if filters:
             filters = params['filters']
             
             if '--formats' in filters and filters['--formats']:
