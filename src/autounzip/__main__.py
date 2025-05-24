@@ -151,56 +151,6 @@ def find_7zip_path():
     
     return None
 
-def create_arg_parser():
-    """创建命令行参数解析器"""
-    parser = argparse.ArgumentParser(description='文件自动解压工具')
-    
-    # 解压选项
-    parser.add_argument('--delete-after', '-d', action='store_true', 
-                       help='解压成功后删除源文件')
-    parser.add_argument('--password', '-p', type=str,
-                       help='设置解压密码')
-    
-    # 路径选项
-    parser.add_argument('--clipboard', '-c', action='store_true', 
-                       help='从剪贴板读取路径')
-    parser.add_argument('--path', type=str, 
-                       help='指定处理路径')
-    
-    # TUI选项
-    parser.add_argument('--tui', action='store_true',
-                       help='启用TUI图形配置界面')
-    
-    # 递归选项
-    parser.add_argument('--recursive', '-r', action='store_true',
-                       help='递归处理嵌套压缩包')
-    
-    # 并行处理
-    parser.add_argument('--no-parallel', action='store_true',
-                       help='禁用并行解压')
-    
-    # 文件夹前缀选项
-    parser.add_argument('--prefix', type=str, default='[A]',
-                       help='解压文件夹前缀，默认为[#a]')
-    
-    # 文件格式选项
-    parser.add_argument('-f', '--formats', nargs='+', 
-                       help='文件格式筛选 (例如: jpg png avif)')
-    parser.add_argument('-i', '--include', nargs='+',
-                       help='包含的文件格式列表 (例如: jpg png)')
-    parser.add_argument('-e', '--exclude', nargs='+', 
-                       help='排除的文件格式列表 (例如: gif mp4)')
-    parser.add_argument('-t', '--type', choices=[
-                        'image', 'video', 'audio', 'document', 'code', 'archive', 'text'],
-                       help='指定要处理的文件类型 (例如: image, video)')        
-    parser.add_argument('--types', nargs='+',
-                       choices=['zip', 'cbz', 'rar', 'cbr', '7z'],
-                       help='指定要处理的压缩包格式 (例如: zip cbz)')
-    parser.add_argument('-a', '--archive-types', nargs='+',
-                       choices=['zip', 'cbz', 'rar', 'cbr', '7z'],
-                       help='指定要处理的压缩包格式，同--types (例如: zip cbz)')
-    
-    return parser
 
 def get_path_from_clipboard():
     """从剪贴板获取路径，支持多行路径，返回第一个有效路径"""
@@ -369,14 +319,14 @@ def run_with_params(params: Dict[str, Any]) -> int:
             console.print("[red]错误: 未指定有效的处理路径[/red]")
             console.print("使用 --path 指定路径或使用 --clipboard 从剪贴板读取路径")
             return 1
-        
-        # 分析压缩包
+          # 分析压缩包
         logger.info(f"开始分析压缩包: {folder_path}")
         config_path = analyze_archives(folder_path, extract_prefix, format_filters, archive_types)
         
         if not config_path:
-            logger.error("压缩包分析失败")
-            return 1
+            logger.info("未找到任何压缩包，程序正常结束")
+            console.print("[yellow]未找到任何压缩包[/yellow]")
+            return 0
         
         # 询问用户是否继续解压
         if Confirm.ask("[yellow]是否继续进行解压操作?[/yellow]", default=True):

@@ -8,14 +8,10 @@ import os
 import sys
 import json
 import zipfile
-import rarfile
-import py7zr
 import shutil
 import subprocess
-import logging
 import re
 import time
-import tarfile
 from pathlib import Path
 from typing import List, Dict, Union, Any, Optional, Tuple
 from datetime import datetime
@@ -29,7 +25,6 @@ from rich.logging import RichHandler
 from rich.text import Text
 from rich.progress import Progress, TextColumn, BarColumn, TaskID, SpinnerColumn
 from rich.progress import TimeElapsedColumn, TimeRemainingColumn, FileSizeColumn, ProgressColumn
-from rich.live import Live
 
 # 设置Rich日志记录器
 console = Console()

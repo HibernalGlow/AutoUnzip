@@ -62,7 +62,7 @@ class ConfigManager:
         parser.add_argument('--delete-after', '-d', action='store_true', 
                            help='解压成功后删除源文件')
         parser.add_argument('--prefix', type=str,
-                           help='解压文件夹前缀，默认为[#a]')
+                           help='解压文件夹前缀')
         # 路径选项
         parser.add_argument('--clipboard', '-c', action='store_true', 
                            help='从剪贴板读取路径')
@@ -105,23 +105,20 @@ class ConfigManager:
         
         return parser
     def get_preset_configs(self) -> Dict[str, Any]:
-        """获取预设配置"""
+        """获取预设配置"""        
         return {
             "标准解压": {
                 "description": "标准解压模式",
                 "checkbox_options": ["delete_after","clipboard"],
                 "input_values": {
-                    "prefix": "[#a]"
+                    "prefix": "[#a]",
                 }
             },
             "无前缀解压": {
                 "description": "无前缀解压模式",
                 "checkbox_options": ["delete_after","clipboard"],
-                "input_values": {
-                    "prefix": ""
-                }
+            },        
             }
-        }
 
     def get_path_from_clipboard(self) -> str:
         """从剪贴板获取路径，支持多行路径，返回第一个有效路径"""
