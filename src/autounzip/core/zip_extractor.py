@@ -35,9 +35,6 @@ from autounzip.core.archive_analyzer import ArchiveInfo, EXTRACT_MODE_ALL, EXTRA
 # 导入PageZ代码页检测模块
 try:
     # 确保PageZ模块可以被导入
-    pagez_path = Path(__file__).parent.parent.parent.parent.parent / "SmartZ" / "src"
-    if pagez_path.exists() and str(pagez_path) not in sys.path:
-        sys.path.append(str(pagez_path))
     from pagez.core.api import detect_archive_codepage
     PAGEZ_AVAILABLE = True
 except ImportError as e:

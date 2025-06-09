@@ -28,8 +28,43 @@ from ..analyzers import (
     EXTRACT_MODE_ALL, EXTRACT_MODE_SELECTIVE, EXTRACT_MODE_SKIP
 )
 
+# 导入PageZ代码页检测模块
+try:
+    # 确保PageZ模块可以被导入
+    from pagez.core.api import detect_archive_codepage
+    PAGEZ_AVAILABLE = True
+except Exception as e:
+    logger.info(f"[yellow]警告: 无法导入PageZ模块: {str(e)}，将使用默认代码页[/yellow]")
+    PAGEZ_AVAILABLE = False
+
 # 设置Rich日志记录
 console = Console()
+
+
+def detect_codepage(archive_path: str) -> tuple:
+    """检测压缩包的代码页
+    
+    Args:
+        archive_path: 压缩包路径
+        
+    Returns:
+        tuple: (代码页描述, 代码页参数)，如果无法检测则返回 ("", "")
+    """
+    # 如果PageZ不可用，返回空
+    if not PAGEZ_AVAILABLE:
+        return "", ""
+        
+    try:
+        # 使用PageZ的代码页检测功能
+        codepage_info = detect_archive_codepage(archive_path)
+        codepage = str(codepage_info)
+        codepage_param = codepage_info.param
+        
+        logger.info(f"[blue]为 {os.path.basename(archive_path)} 检测到代码页: {codepage_info}[/blue]")
+        return codepage, codepage_param
+    except Exception as e:
+        logger.info(f"[yellow]代码页检测失败: {str(e)}，将使用默认代码页[/yellow]")
+        return "", ""
 
 
 def _analyze_single_archive(args: tuple) -> Optional[ArchiveInfo]:
@@ -89,6 +124,11 @@ def _analyze_single_archive(args: tuple) -> Optional[ArchiveInfo]:
         # 推荐的解压路径
         extract_folder = extract_prefix + archive_path.stem  # 添加前缀 + 去掉扩展名的文件名
         archive_info.extract_path = str((archive_path.parent / extract_folder).absolute())
+        
+        # 检测代码页
+        codepage, codepage_param = detect_codepage(str(archive_path.absolute()))
+        archive_info.codepage = codepage
+        archive_info.codepage_param = codepage_param
         
         return archive_info
         
@@ -224,6 +264,12 @@ class ArchiveAnalyzer:
             # 推荐的解压路径
             extract_folder = self.extract_prefix + archive_path.stem  # 添加前缀 + 去掉扩展名的文件名
             archive_info.extract_path = str((archive_path.parent / extract_folder).absolute())
+            
+            # 检测代码页
+            codepage, codepage_param = detect_codepage(str(archive_path.absolute()))
+            archive_info.codepage = codepage
+            archive_info.codepage_param = codepage_param
+            
             return archive_info
             
         except Exception as e:
@@ -538,6 +584,10 @@ def display_archive_structure(archive_infos: List[ArchiveInfo], display_details:
         archive_node.add(f"[cyan]文件数量:[/cyan] {archive.file_count}")
         archive_node.add(f"[cyan]解压模式:[/cyan] {archive.extract_mode}")
         archive_node.add(f"[cyan]建议:[/cyan] {archive.recommendation}")
+        
+        # 显示代码页信息
+        if archive.codepage:
+            archive_node.add(f"[cyan]代码页:[/cyan] {archive.codepage}")
         
         # 如果需要密码，显示警告
         if archive.password_required:

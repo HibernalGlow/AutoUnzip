@@ -30,6 +30,8 @@ class ArchiveInfo:
     extract_path: str = ""  # 推荐的解压路径
     password_required: bool = False  # 是否需要密码
     password: str = ""  # 解压密码
+    codepage: str = ""  # 代码页信息
+    codepage_param: str = ""  # 代码页参数，例如 "-mcp=936"
     nested_archives: List["ArchiveInfo"] = field(default_factory=list)  # 嵌套的压缩包
     
     def to_dict(self) -> Dict[str, Any]:

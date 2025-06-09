@@ -1,6 +1,6 @@
 [project]
 name = "autounzip"
-version = "0.1.0"
+version = "0.1.5"
 description = "自动解压工具 - 简单版，负责处理命令行参数并调用相应的分析和解压功能"
 readme = "README.md"
 requires-python = ">=3.11"
