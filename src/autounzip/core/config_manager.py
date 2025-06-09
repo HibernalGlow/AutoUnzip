@@ -108,6 +108,10 @@ class ConfigManager:
     def get_preset_configs(self) -> Dict[str, Any]:
         """获取预设配置"""        
         return {
+            "无前缀解压": {
+                "description": "无前缀解压模式",
+                "checkbox_options": ["delete_after","clipboard"],
+            },       
             "标准解压": {
                 "description": "标准解压模式",
                 "checkbox_options": ["delete_after","clipboard"],
@@ -115,10 +119,6 @@ class ConfigManager:
                     "prefix": "[#a]",
                 }
             },
-            "无前缀解压": {
-                "description": "无前缀解压模式",
-                "checkbox_options": ["delete_after","clipboard"],
-            },       
             "安全退出": {
                 "description": "安全退出模式",
                 "checkbox_options": ["exit"],

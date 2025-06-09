@@ -32,6 +32,18 @@ console = Console()
 # 导入ArchiveInfo类型
 from autounzip.core.archive_analyzer import ArchiveInfo, EXTRACT_MODE_ALL, EXTRACT_MODE_SELECTIVE, EXTRACT_MODE_SKIP
 
+# 导入PageZ代码页检测模块
+try:
+    # 确保PageZ模块可以被导入
+    pagez_path = Path(__file__).parent.parent.parent.parent.parent / "SmartZ" / "src"
+    if pagez_path.exists() and str(pagez_path) not in sys.path:
+        sys.path.append(str(pagez_path))
+    from pagez.core.api import detect_archive_codepage
+    PAGEZ_AVAILABLE = True
+except ImportError as e:
+    console.print(f"[yellow]警告: 无法导入PageZ模块: {str(e)}，将使用默认代码页[/yellow]")
+    PAGEZ_AVAILABLE = False
+
 # 解压结果类型
 @dataclass
 class ExtractionResult:
@@ -43,6 +55,7 @@ class ExtractionResult:
     elapsed_time: float = 0.0
     error_message: str = ""
     warnings: List[str] = None
+    codepage: str = ""  # 添加代码页信息
     
     def __post_init__(self):
         if self.warnings is None:
@@ -149,6 +162,30 @@ class ZipExtractor:
         )
         self.tracker = ExtractionTracker(self.progress)
     
+    def get_codepage_param(self, archive_path: str) -> Optional[str]:
+        """获取压缩包的代码页参数
+        
+        Args:
+            archive_path: 压缩包路径
+            
+        Returns:
+            代码页参数字符串，如 "-mcp=936"，如果无法检测则返回None
+        """
+        # 如果PageZ不可用，返回None
+        if not PAGEZ_AVAILABLE:
+            return None
+            
+        try:
+            # 直接使用PageZ的代码页检测功能
+            codepage_info = detect_archive_codepage(archive_path)
+            codepage_param = codepage_info.param
+            
+            console.print(f"[blue]为 {os.path.basename(archive_path)} 检测到代码页: {codepage_info}[/blue]")
+            return codepage_param
+        except Exception as e:
+            console.print(f"[yellow]代码页检测失败: {str(e)}，将使用默认代码页[/yellow]")
+            return None
+    
     def extract_from_json(self, config_path: Union[str, Path], delete_after_success: bool = False) -> List[ExtractionResult]:
         """根据JSON配置文件进行解压"""
         # 确保config_path是Path对象
@@ -225,7 +262,11 @@ class ZipExtractor:
                 if extract_mode == EXTRACT_MODE_SKIP:
                     console.print(f"[yellow]跳过解压: {os.path.basename(archive_path)}[/yellow]")
                     continue
-                  # 执行解压
+                
+                # 检测代码页（只检测一次）
+                codepage_param = self.get_codepage_param(archive_path)
+                
+                # 执行解压
                 try:
                     start_time = time.time()
                     result = self._extract_archive(
@@ -233,7 +274,8 @@ class ZipExtractor:
                         target_path=extract_path,
                         password=password,
                         extract_mode=extract_mode,
-                        archive_config=archive_config
+                        archive_config=archive_config,
+                        codepage_param=codepage_param  # 传入代码页参数
                     )
                     elapsed_time = time.time() - start_time
                     
@@ -244,7 +286,8 @@ class ZipExtractor:
                         success=result[0],
                         extracted_files=result[1],
                         elapsed_time=elapsed_time,
-                        error_message="" if result[0] else result[2]
+                        error_message="" if result[0] else result[2],
+                        codepage=codepage_param or "默认"  # 记录使用的代码页
                     )
                     
                     results.append(extraction_result)
@@ -262,24 +305,29 @@ class ZipExtractor:
                     console.print(f"[red]解压出错: {str(e)}[/red]")
                     results.append(ExtractionResult(
                         archive_path=archive_path,
-                        target_path=extract_path,                        success=False,
+                        target_path=extract_path,
+                        success=False,
                         error_message=str(e)
                     ))
         
         return results
     
-    def _extract_archive(self, archive_path: str, target_path: str, password: str = "", extract_mode: str = EXTRACT_MODE_ALL, archive_config: dict = None) -> Tuple[bool, int, str]:
+    def _extract_archive(self, archive_path: str, target_path: str, password: str = "", 
+                        extract_mode: str = EXTRACT_MODE_ALL, archive_config: dict = None,
+                        codepage_param: Optional[str] = None) -> Tuple[bool, int, str]:
         """解压单个压缩包，使用7z命令统一处理所有格式，返回(成功标志, 解压文件数, 错误信息)"""
         # 确保目标目录存在
         os.makedirs(target_path, exist_ok=True)
         
         # 统一使用7z命令解压
         try:
-            return self._extract_with_7zip_selective(archive_path, target_path, password, extract_mode, archive_config)
+            return self._extract_with_7zip_selective(archive_path, target_path, password, extract_mode, archive_config, codepage_param)
         except Exception as e:
             return False, 0, str(e)
     
-    def _extract_with_7zip_selective(self, archive_path: str, target_path: str, password: str = "", extract_mode: str = EXTRACT_MODE_ALL, archive_config: dict = None) -> Tuple[bool, int, str]:
+    def _extract_with_7zip_selective(self, archive_path: str, target_path: str, password: str = "", 
+                                    extract_mode: str = EXTRACT_MODE_ALL, archive_config: dict = None,
+                                    codepage_param: Optional[str] = None) -> Tuple[bool, int, str]:
         """使用7zip命令行工具解压文件，支持选择性解压"""
         try:
             # 构建基础命令
@@ -288,6 +336,11 @@ class ZipExtractor:
             # 如果需要密码
             if password:
                 cmd.append(f"-p{password}")
+            
+            # 添加代码页参数
+            if codepage_param:
+                cmd.append(codepage_param)
+                console.print(f"[blue]使用代码页参数: {codepage_param}[/blue]")
             
             # 检查是否需要选择性解压
             if extract_mode == EXTRACT_MODE_SELECTIVE:
@@ -313,7 +366,8 @@ class ZipExtractor:
                 # Make sure we don't use the actual terminal
                 stdin=subprocess.DEVNULL
             )
-              # 跟踪进度
+            
+            # 跟踪进度
             extracted_files = 0
             for line in process.stdout:
                 line = line.strip()

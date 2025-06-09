@@ -10,3 +10,4 @@ wheels/
 .venv
 /src/autounzip/logs
 /src/autounzip/configs
+*.log
