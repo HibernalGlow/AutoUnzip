@@ -80,6 +80,8 @@ class ConfigManager:
                            help='禁用并行解压')
         parser.add_argument('--part', action='store_true',
                            help='启用部分解压模式：只提取符合过滤条件的文件，而不是跳过整个压缩包')
+        parser.add_argument('--flatten-single-folder', '--flatten', action='store_true',
+                           help='对于单层文件夹结构的压缩包，直接解压内容而不创建以压缩包命名的文件夹')
         
         # 其他选项
         parser.add_argument('--dzipfile', action='store_true', 
@@ -110,11 +112,18 @@ class ConfigManager:
         return {
             "无前缀解压": {
                 "description": "无前缀解压模式",
-                "checkbox_options": ["delete_after","clipboard"],
+                "checkbox_options": ["delete_after","clipboard","flatten_single_folder"],
             },       
             "标准解压": {
                 "description": "标准解压模式",
-                "checkbox_options": ["delete_after","clipboard"],
+                "checkbox_options": ["delete_after","clipboard","flatten_single_folder"],
+                "input_values": {
+                    "prefix": "[#a]",
+                }
+            },
+            "扁平化解压": {
+                "description": "扁平化解压模式 - 对单层文件夹结构直接解压",
+                "checkbox_options": ["delete_after","clipboard","flatten_single_folder"],
                 "input_values": {
                     "prefix": "[#a]",
                 }
@@ -177,7 +186,8 @@ class ConfigManager:
                 '--recursive': parsed_args.recursive,
                 '--no-parallel': getattr(parsed_args, 'no_parallel', False),
                 '--part': getattr(parsed_args, 'part', False),
-                '--dzipfile': getattr(parsed_args, 'dzipfile', False)
+                '--dzipfile': getattr(parsed_args, 'dzipfile', False),
+                '--flatten-single-folder': getattr(parsed_args, 'flatten_single_folder', False)
             },
             'inputs': {
                 '--path': target_path,

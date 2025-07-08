@@ -248,12 +248,30 @@ class ZipExtractor:
                 extract_mode = archive_config.get("extract_mode", EXTRACT_MODE_ALL)
                 extract_path = archive_config.get("extract_path", "")
                 password = archive_config.get("password", "")
+                flatten_single_folder = archive_config.get("flatten_single_folder", False)
                 
                 # 如果未指定解压路径，使用默认路径（压缩包所在目录下同名文件夹）
                 if not extract_path:
                     archive_dir = os.path.dirname(archive_path)
                     archive_name = os.path.splitext(os.path.basename(archive_path))[0]
-                    extract_path = os.path.join(archive_dir, archive_name)
+                    
+                    # 检查是否启用了单层文件夹扁平化，并且该压缩包是单层文件夹结构
+                    if flatten_single_folder:
+                        # 需要先分析压缩包结构来判断是否为单层文件夹
+                        from autounzip.core.archive_analyzer import ArchiveAnalyzer
+                        temp_analyzer = ArchiveAnalyzer()
+                        temp_info = temp_analyzer.analyze_archive(archive_path)
+                        
+                        if temp_info and temp_info.is_single_folder:
+                            # 单层文件夹结构，直接解压到压缩包所在目录
+                            extract_path = archive_dir
+                            console.print(f"[cyan]检测到单层文件夹结构，将直接解压到: {extract_path}[/cyan]")
+                        else:
+                            # 不是单层文件夹结构，使用标准路径
+                            extract_path = os.path.join(archive_dir, archive_name)
+                    else:
+                        # 未启用扁平化，使用标准路径
+                        extract_path = os.path.join(archive_dir, archive_name)
                 
                 # 检查解压模式
                 if extract_mode == EXTRACT_MODE_SKIP:

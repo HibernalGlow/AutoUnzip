@@ -33,6 +33,8 @@ class ArchiveInfo:
     codepage: str = ""  # 代码页信息
     codepage_param: str = ""  # 代码页参数，例如 "-mcp=936"
     nested_archives: List["ArchiveInfo"] = field(default_factory=list)  # 嵌套的压缩包
+    is_single_folder: bool = False  # 是否为单层文件夹结构
+    single_folder_name: str = ""  # 单层文件夹的名称
     
     def to_dict(self) -> Dict[str, Any]:
         """转换为字典，便于JSON序列化"""

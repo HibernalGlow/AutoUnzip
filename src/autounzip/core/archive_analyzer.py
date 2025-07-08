@@ -122,8 +122,11 @@ def _analyze_single_archive(args: tuple) -> Optional[ArchiveInfo]:
         _determine_extract_mode_helper(archive_info, filter_manager)
         
         # 推荐的解压路径
-        extract_folder = extract_prefix + archive_path.stem  # 添加前缀 + 去掉扩展名的文件名
-        archive_info.extract_path = str((archive_path.parent / extract_folder).absolute())
+        extract_folder = (extract_prefix or "") + archive_path.stem  # 添加前缀 + 去掉扩展名的文件名
+        default_extract_path = str((archive_path.parent / extract_folder).absolute())
+        
+        # 检查是否需要应用扁平化（这里无法获取全局设置，所以使用默认路径）
+        archive_info.extract_path = default_extract_path
         
         # 检测代码页
         codepage, codepage_param = detect_codepage(str(archive_path.absolute()))
@@ -214,6 +217,7 @@ class ArchiveAnalyzer:
         self.archive_types = archive_types or []
         self.use_multiprocessing = use_multiprocessing
         self.max_workers = max_workers or cpu_count()
+        self.flatten_single_folder = False  # 默认关闭扁平化
         
         # 初始化组件
         self.filter_manager = FilterManager(format_filters)
@@ -262,8 +266,17 @@ class ArchiveAnalyzer:
             self._determine_extract_mode(archive_info)
             
             # 推荐的解压路径
-            extract_folder = self.extract_prefix + archive_path.stem  # 添加前缀 + 去掉扩展名的文件名
-            archive_info.extract_path = str((archive_path.parent / extract_folder).absolute())
+            extract_folder = (self.extract_prefix or "") + archive_path.stem  # 添加前缀 + 去掉扩展名的文件名
+            default_extract_path = str((archive_path.parent / extract_folder).absolute())
+            
+            # 如果启用了扁平化且是单层文件夹结构，修改解压路径
+            if self.flatten_single_folder and archive_info.is_single_folder:
+                # 直接解压到压缩包所在目录
+                archive_info.extract_path = str(archive_path.parent.absolute())
+                console.print(f"[cyan]应用扁平化：将解压到 {archive_info.extract_path}[/cyan]")
+            else:
+                # 使用默认解压路径
+                archive_info.extract_path = default_extract_path
             
             # 检测代码页
             codepage, codepage_param = detect_codepage(str(archive_path.absolute()))
@@ -548,8 +561,15 @@ class ArchiveAnalyzer:
         # 创建结果字典
         result = {
             "timestamp": datetime.datetime.now().isoformat(),
-            "archives": [archive.to_dict() for archive in self.archive_infos]
+            "archives": []
         }
+        
+        # 为每个压缩包创建配置项
+        for archive in self.archive_infos:
+            archive_config = archive.to_dict()
+            # 添加扁平化选项
+            archive_config["flatten_single_folder"] = self.flatten_single_folder
+            result["archives"].append(archive_config)
         
         # 保存到文件
         try:
@@ -589,6 +609,12 @@ def display_archive_structure(archive_infos: List[ArchiveInfo], display_details:
         if archive.codepage:
             archive_node.add(f"[cyan]代码页:[/cyan] {archive.codepage}")
         
+        # 显示单层文件夹信息
+        if archive.is_single_folder:
+            archive_node.add(f"[green]单层文件夹:[/green] {archive.single_folder_name}")
+        else:
+            archive_node.add(f"[yellow]多层结构[/yellow]")
+        
         # 如果需要密码，显示警告
         if archive.password_required:
             archive_node.add("[yellow]需要密码才能解压[/yellow]")
@@ -619,7 +645,8 @@ def analyze_archive(target_path: Union[str, Path],
                  format_filters: dict = None,
                  archive_types: list = None,
                  use_multiprocessing: bool = True,
-                 max_workers: int = None) -> Optional[str]:
+                 max_workers: int = None,
+                 flatten_single_folder: bool = False) -> Optional[str]:
     """分析压缩包并返回JSON配置文件路径
     
     Args:
@@ -631,6 +658,7 @@ def analyze_archive(target_path: Union[str, Path],
         archive_types: 要处理的压缩包格式列表
         use_multiprocessing: 是否使用多进程分析
         max_workers: 最大工作进程数
+        flatten_single_folder: 是否启用单层文件夹扁平化
     
     Returns:
         str: JSON配置文件路径，如果分析失败返回None
@@ -645,6 +673,9 @@ def analyze_archive(target_path: Union[str, Path],
         use_multiprocessing=use_multiprocessing,
         max_workers=max_workers
     )
+    
+    # 设置扁平化选项
+    analyzer.flatten_single_folder = flatten_single_folder
     
     # 扫描并分析压缩包
     archive_infos = analyzer.scan_archives(target_path)

@@ -64,13 +64,28 @@ class BaseArchiveAnalyzer:
             files = []
             lines = result.stdout.split('\n')
             current_file = {}
+            parsing_files = False
             
             for line in lines:
                 line = line.strip()
+                
+                # 检测是否开始解析文件信息（在"----------"分隔符之后）
+                if line == "----------":
+                    parsing_files = True
+                    continue
+                
+                # 如果还没开始解析文件，跳过
+                if not parsing_files:
+                    continue
+                
                 if not line:
-                    if current_file.get('Path') and current_file.get('Attributes', '').startswith('D') == False:
-                        # 只添加文件，不添加目录
-                        files.append(current_file['Path'])
+                    if current_file.get('Path'):
+                        # 检查是否为目录（Folder = + 或 Attributes以'D'开始）
+                        is_directory = (current_file.get('Folder') == '+' or 
+                                      current_file.get('Attributes', '').startswith('D'))
+                        if not is_directory:
+                            # 只添加文件，不添加目录
+                            files.append(current_file['Path'])
                     current_file = {}
                     continue
                 
@@ -79,8 +94,11 @@ class BaseArchiveAnalyzer:
                     current_file[key.strip()] = value.strip()
             
             # 处理最后一个文件
-            if current_file.get('Path') and current_file.get('Attributes', '').startswith('D') == False:
-                files.append(current_file['Path'])
+            if current_file.get('Path'):
+                is_directory = (current_file.get('Folder') == '+' or 
+                              current_file.get('Attributes', '').startswith('D'))
+                if not is_directory:
+                    files.append(current_file['Path'])
             
             return files
             
@@ -153,6 +171,9 @@ class BaseArchiveAnalyzer:
         archive_info.file_types = dict(file_types_counter)
         archive_info.file_extensions = dict(extensions_counter)
         
+        # 检测是否为单层文件夹结构
+        self._detect_single_folder_structure(archive_info, all_files)
+        
         # 检查文件数量
         if archive_info.file_count == 0:
             archive_info.extract_mode = EXTRACT_MODE_SKIP
@@ -189,3 +210,41 @@ class BaseArchiveAnalyzer:
             console.print(f"[yellow]密码检查超时: {archive_info.name}[/yellow]")
         except Exception as e:
             console.print(f"[yellow]无法检查密码状态: {str(e)}[/yellow]")
+    
+    def _detect_single_folder_structure(self, archive_info: ArchiveInfo, all_files: List[str]) -> None:
+        """检测是否为单层文件夹结构
+        
+        Args:
+            archive_info: 压缩包信息对象
+            all_files: 压缩包中的所有文件列表
+        """
+        if not all_files:
+            return
+        
+        # 获取所有文件的顶级目录
+        top_level_dirs = set()
+        top_level_files = []  # 直接在根目录的文件
+        
+        for file_path in all_files:
+            # 使用正斜杠分割路径，确保跨平台兼容性
+            path_parts = file_path.replace('\\', '/').split('/')
+            
+            if len(path_parts) == 1:
+                # 直接在根目录的文件
+                top_level_files.append(file_path)
+            else:
+                # 在子目录中的文件，记录顶级目录名
+                top_level_dirs.add(path_parts[0])
+        
+        # 判断是否为单层文件夹结构
+        # 条件：只有一个顶级目录，且根目录下没有其他文件
+        if len(top_level_dirs) == 1 and len(top_level_files) == 0:
+            archive_info.is_single_folder = True
+            archive_info.single_folder_name = list(top_level_dirs)[0]
+            console.print(f"[cyan]检测到单层文件夹结构: {archive_info.single_folder_name}[/cyan]")
+        else:
+            archive_info.is_single_folder = False
+            if len(top_level_dirs) > 1:
+                console.print(f"[dim]多层结构: {len(top_level_dirs)} 个顶级目录[/dim]")
+            elif len(top_level_files) > 0:
+                console.print(f"[dim]根目录包含 {len(top_level_files)} 个文件[/dim]")

@@ -79,7 +79,7 @@ def setup_logger(app_name="app", project_root=None, console_output=True):
         compression="zip",
         encoding="utf-8",
         format="{time:YYYY-MM-DD HH:mm:ss} | {elapsed} | {level.icon} {level: <8} | {name}:{function}:{line} - {message}",
-    )
+        enqueue=True,     )
     
     # 创建配置信息字典
     config_info = {
@@ -188,7 +188,8 @@ def get_path_from_clipboard():
 def analyze_archives(target_path: Union[str, Path], 
                     extract_prefix: str = "[#a]",
                     format_filters: dict = None,
-                    archive_types: list = None) -> Optional[str]:
+                    archive_types: list = None,
+                    flatten_single_folder: bool = False) -> Optional[str]:
     """分析压缩包并返回JSON配置文件路径"""
     try:
         # 确保路径是Path对象
@@ -207,7 +208,8 @@ def analyze_archives(target_path: Union[str, Path],
                                     display=True,
                                     extract_prefix=extract_prefix,
                                     format_filters=format_filters,
-                                    archive_types=archive_types)
+                                    archive_types=archive_types,
+                                    flatten_single_folder=flatten_single_folder)
         
         return config_path
         
@@ -277,6 +279,7 @@ def run_with_params(params: Dict[str, Any]) -> int:
         use_clipboard = params.get('options', {}).get('--clipboard', False)
         recursive = params.get('options', {}).get('--recursive', False)
         no_parallel = params.get('options', {}).get('--no-parallel', False)
+        flatten_single_folder = params.get('options', {}).get('--flatten-single-folder', False)
           # 提取新的过滤参数
         extract_prefix = params.get('inputs', {}).get('--prefix', '[#a]')
         format_filters = {}
@@ -321,7 +324,7 @@ def run_with_params(params: Dict[str, Any]) -> int:
             return 1
           # 分析压缩包
         logger.info(f"开始分析压缩包: {folder_path}")
-        config_path = analyze_archives(folder_path, extract_prefix, format_filters, archive_types)
+        config_path = analyze_archives(folder_path, extract_prefix, format_filters, archive_types, flatten_single_folder)
         
         if not config_path:
             logger.info("未找到任何压缩包，程序正常结束")
