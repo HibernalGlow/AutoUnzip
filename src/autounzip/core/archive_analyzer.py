@@ -41,15 +41,20 @@ except Exception as e:
 console = Console()
 
 
-def detect_codepage(archive_path: str) -> tuple:
+def detect_codepage(archive_path: str, skip_codepage: bool = False) -> tuple:
     """检测压缩包的代码页
     
     Args:
         archive_path: 压缩包路径
+        skip_codepage: 是否跳过代码页检测，直接使用UTF-8
         
     Returns:
         tuple: (代码页描述, 代码页参数)，如果无法检测则返回 ("", "")
     """
+    # 如果跳过代码页检测，直接返回UTF-8
+    if skip_codepage:
+        return "UTF-8 (跳过检测)", "-mcp=utf8"
+    
     # 如果PageZ不可用，返回空
     if not PAGEZ_AVAILABLE:
         return "", ""
@@ -71,12 +76,12 @@ def _analyze_single_archive(args: tuple) -> Optional[ArchiveInfo]:
     """独立的压缩包分析函数，用于多进程执行
     
     Args:
-        args: 包含分析参数的元组 (file_path, extract_prefix, format_filters, archive_types)
+        args: 包含分析参数的元组 (file_path, extract_prefix, format_filters, archive_types, skip_codepage)
         
     Returns:
         ArchiveInfo: 分析结果，如果失败返回None
     """
-    file_path, extract_prefix, format_filters, archive_types = args
+    file_path, extract_prefix, format_filters, archive_types, skip_codepage = args
     
     try:
         # 创建临时的分析器组件
@@ -129,7 +134,7 @@ def _analyze_single_archive(args: tuple) -> Optional[ArchiveInfo]:
         archive_info.extract_path = default_extract_path
         
         # 检测代码页
-        codepage, codepage_param = detect_codepage(str(archive_path.absolute()))
+        codepage, codepage_param = detect_codepage(str(archive_path.absolute()), skip_codepage)
         archive_info.codepage = codepage
         archive_info.codepage_param = codepage_param
         
@@ -200,7 +205,8 @@ class ArchiveAnalyzer:
                  format_filters=None, 
                  archive_types=None,
                  use_multiprocessing=True,
-                 max_workers=None):
+                 max_workers=None,
+                 skip_codepage=False):
         """初始化分析器
         
         Args:
@@ -209,6 +215,7 @@ class ArchiveAnalyzer:
             archive_types: 要处理的压缩包格式列表
             use_multiprocessing: 是否使用多进程分析，默认为True
             max_workers: 最大工作进程数，默认为CPU核心数
+            skip_codepage: 是否跳过代码页分析，默认为False
         """
         self.archive_infos = []
         self.output_json_path = None
@@ -218,6 +225,7 @@ class ArchiveAnalyzer:
         self.use_multiprocessing = use_multiprocessing
         self.max_workers = max_workers or cpu_count()
         self.flatten_single_folder = False  # 默认关闭扁平化
+        self.skip_codepage = skip_codepage  # 是否跳过代码页分析
         
         # 初始化组件
         self.filter_manager = FilterManager(format_filters)
@@ -279,7 +287,7 @@ class ArchiveAnalyzer:
                 archive_info.extract_path = default_extract_path
             
             # 检测代码页
-            codepage, codepage_param = detect_codepage(str(archive_path.absolute()))
+            codepage, codepage_param = detect_codepage(str(archive_path.absolute()), self.skip_codepage)
             archive_info.codepage = codepage
             archive_info.codepage_param = codepage_param
             
@@ -485,7 +493,8 @@ class ArchiveAnalyzer:
                 file_path,
                 self.extract_prefix,
                 self.filter_manager.format_filters,
-                self.archive_types
+                self.archive_types,
+                self.skip_codepage
             )
             args_list.append(args)
         
@@ -561,6 +570,7 @@ class ArchiveAnalyzer:
         # 创建结果字典
         result = {
             "timestamp": datetime.datetime.now().isoformat(),
+            "skip_codepage": self.skip_codepage,  # 保存跳过代码页检测的设置
             "archives": []
         }
         
@@ -646,7 +656,8 @@ def analyze_archive(target_path: Union[str, Path],
                  archive_types: list = None,
                  use_multiprocessing: bool = True,
                  max_workers: int = None,
-                 flatten_single_folder: bool = False) -> Optional[str]:
+                 flatten_single_folder: bool = False,
+                 skip_codepage: bool = False) -> Optional[str]:
     """分析压缩包并返回JSON配置文件路径
     
     Args:
@@ -659,6 +670,7 @@ def analyze_archive(target_path: Union[str, Path],
         use_multiprocessing: 是否使用多进程分析
         max_workers: 最大工作进程数
         flatten_single_folder: 是否启用单层文件夹扁平化
+        skip_codepage: 是否跳过代码页分析，默认使用UTF-8
     
     Returns:
         str: JSON配置文件路径，如果分析失败返回None
@@ -671,7 +683,8 @@ def analyze_archive(target_path: Union[str, Path],
         format_filters=format_filters,
         archive_types=archive_types,
         use_multiprocessing=use_multiprocessing,
-        max_workers=max_workers
+        max_workers=max_workers,
+        skip_codepage=skip_codepage
     )
     
     # 设置扁平化选项

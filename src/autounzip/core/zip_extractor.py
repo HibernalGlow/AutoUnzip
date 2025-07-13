@@ -159,15 +159,21 @@ class ZipExtractor:
         )
         self.tracker = ExtractionTracker(self.progress)
     
-    def get_codepage_param(self, archive_path: str) -> Optional[str]:
+    def get_codepage_param(self, archive_path: str, skip_codepage: bool = False) -> Optional[str]:
         """获取压缩包的代码页参数
         
         Args:
             archive_path: 压缩包路径
+            skip_codepage: 是否跳过代码页检测，直接使用UTF-8
             
         Returns:
             代码页参数字符串，如 "-mcp=936"，如果无法检测则返回None
         """
+        # 如果跳过代码页检测，直接返回UTF-8参数
+        if skip_codepage:
+            console.print(f"[cyan]跳过代码页检测，使用UTF-8: {os.path.basename(archive_path)}[/cyan]")
+            return "-mcp=utf8"
+        
         # 如果PageZ不可用，返回None
         if not PAGEZ_AVAILABLE:
             return None
@@ -198,6 +204,9 @@ class ZipExtractor:
         
         # 提取过滤条件（如果存在）
         self.filter_config = config.get("filter_config", {})
+        
+        # 获取代码页设置
+        skip_codepage = config.get("skip_codepage", False)
         
         # 获取待解压的压缩包列表
         archives = config.get("archives", [])
@@ -279,7 +288,7 @@ class ZipExtractor:
                     continue
                 
                 # 检测代码页（只检测一次）
-                codepage_param = self.get_codepage_param(archive_path)
+                codepage_param = self.get_codepage_param(archive_path, skip_codepage)
                 
                 # 执行解压
                 try:
@@ -345,8 +354,27 @@ class ZipExtractor:
                                     codepage_param: Optional[str] = None) -> Tuple[bool, int, str]:
         """使用7zip命令行工具解压文件，支持选择性解压"""
         try:
-            # 构建基础命令
-            cmd = ["7z", "x", f"-o{target_path}", archive_path, "-y"]
+            # 检查是否需要扁平化解压
+            flatten_single_folder = archive_config.get("flatten_single_folder", False) if archive_config else False
+            is_single_folder = archive_config.get("is_single_folder", False) if archive_config else False
+            
+            # 如果启用扁平化且是单层文件夹，不指定输出目录
+            if flatten_single_folder and is_single_folder:
+                # 使用压缩包所在目录作为目标路径
+                target_path = os.path.dirname(archive_path)
+                original_cwd = os.getcwd()
+                os.chdir(target_path)
+                
+                try:
+                    # 构建命令，不使用 -o 参数
+                    cmd = ["7z", "x", archive_path, "-y"]
+                    console.print(f"[cyan]扁平化解压：在目录 {target_path} 中直接解压[/cyan]")
+                finally:
+                    # 确保恢复原始工作目录
+                    os.chdir(original_cwd)
+            else:
+                # 正常解压，指定输出目录
+                cmd = ["7z", "x", f"-o{target_path}", archive_path, "-y"]
             
             # 如果需要密码
             if password:
@@ -369,18 +397,34 @@ class ZipExtractor:
             
             # 执行命令
             console.print(f"[cyan]执行命令: {' '.join(cmd)}[/cyan]")
-            process = subprocess.Popen(
-                cmd,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                text=True,
-                universal_newlines=True,
-                # Redirect stderr to stdout to capture all output
-                # Use bufsize=1 for line buffering
-                bufsize=1,
-                # Make sure we don't use the actual terminal
-                stdin=subprocess.DEVNULL
-            )
+            
+            # 如果是扁平化解压，需要在目标目录中执行命令
+            if flatten_single_folder and is_single_folder:
+                original_cwd = os.getcwd()
+                os.chdir(target_path)
+                try:
+                    process = subprocess.Popen(
+                        cmd,
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.STDOUT,
+                        text=True,
+                        universal_newlines=True,
+                        bufsize=1,
+                        stdin=subprocess.DEVNULL
+                    )
+                finally:
+                    # 确保恢复原始工作目录
+                    os.chdir(original_cwd)
+            else:
+                process = subprocess.Popen(
+                    cmd,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,
+                    text=True,
+                    universal_newlines=True,
+                    bufsize=1,
+                    stdin=subprocess.DEVNULL
+                )
             
             # 跟踪进度
             extracted_files = 0

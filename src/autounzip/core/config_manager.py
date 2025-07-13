@@ -16,11 +16,7 @@ from typing import Dict, List, Any, Optional, Union
 from rich.console import Console
 from rich.prompt import Confirm
 
-# 导入预设模块
-try:
-    from textual_logger import TextualLoggerManager
-except ImportError:
-    pass
+
 
 # 导入预设配置界面支持，优先使用rich_preset
 
@@ -86,6 +82,8 @@ class ConfigManager:
         # 其他选项
         parser.add_argument('--dzipfile', action='store_true', 
                            help='禁用zipfile内容检查')
+        parser.add_argument('--skip-codepage', action='store_true',
+                           help='跳过代码页分析，默认使用UTF-8编码')
         
         # 保留旧的参数用于兼容性
         parser.add_argument('-f', '--formats', nargs='+', 
@@ -116,9 +114,18 @@ class ConfigManager:
             },       
             "标准解压": {
                 "description": "标准解压模式",
+                "checkbox_options": ["delete_after","clipboard","flatten_single_folder","skip_codepage"],
+                "input_values": {
+                    "prefix": "[#a]",
+                }
+            },
+
+            "jxl解压": {
+                "description": "jxl解压模式",
                 "checkbox_options": ["delete_after","clipboard","flatten_single_folder"],
                 "input_values": {
                     "prefix": "[#a]",
+                    "include": "jxl"
                 }
             },
             "扁平化解压": {
@@ -187,7 +194,8 @@ class ConfigManager:
                 '--no-parallel': getattr(parsed_args, 'no_parallel', False),
                 '--part': getattr(parsed_args, 'part', False),
                 '--dzipfile': getattr(parsed_args, 'dzipfile', False),
-                '--flatten-single-folder': getattr(parsed_args, 'flatten_single_folder', False)
+                '--flatten-single-folder': getattr(parsed_args, 'flatten_single_folder', False),
+                '--skip-codepage': getattr(parsed_args, 'skip_codepage', False)
             },
             'inputs': {
                 '--path': target_path,

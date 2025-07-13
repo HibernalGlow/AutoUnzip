@@ -189,7 +189,8 @@ def analyze_archives(target_path: Union[str, Path],
                     extract_prefix: str = "[#a]",
                     format_filters: dict = None,
                     archive_types: list = None,
-                    flatten_single_folder: bool = False) -> Optional[str]:
+                    flatten_single_folder: bool = False,
+                    skip_codepage: bool = False) -> Optional[str]:
     """分析压缩包并返回JSON配置文件路径"""
     try:
         # 确保路径是Path对象
@@ -209,7 +210,8 @@ def analyze_archives(target_path: Union[str, Path],
                                     extract_prefix=extract_prefix,
                                     format_filters=format_filters,
                                     archive_types=archive_types,
-                                    flatten_single_folder=flatten_single_folder)
+                                    flatten_single_folder=flatten_single_folder,
+                                    skip_codepage=skip_codepage)
         
         return config_path
         
@@ -280,6 +282,7 @@ def run_with_params(params: Dict[str, Any]) -> int:
         recursive = params.get('options', {}).get('--recursive', False)
         no_parallel = params.get('options', {}).get('--no-parallel', False)
         flatten_single_folder = params.get('options', {}).get('--flatten-single-folder', False)
+        skip_codepage = params.get('options', {}).get('--skip-codepage', False)
           # 提取新的过滤参数
         extract_prefix = params.get('inputs', {}).get('--prefix', '[#a]')
         format_filters = {}
@@ -324,7 +327,7 @@ def run_with_params(params: Dict[str, Any]) -> int:
             return 1
           # 分析压缩包
         logger.info(f"开始分析压缩包: {folder_path}")
-        config_path = analyze_archives(folder_path, extract_prefix, format_filters, archive_types, flatten_single_folder)
+        config_path = analyze_archives(folder_path, extract_prefix, format_filters, archive_types, flatten_single_folder, skip_codepage)
         
         if not config_path:
             logger.info("未找到任何压缩包，程序正常结束")
