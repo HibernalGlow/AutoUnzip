@@ -1,0 +1,43 @@
+# https://taskfile.dev
+
+version: '3'
+
+vars:
+  PYTHON_CMD: python
+
+tasks:
+  default:
+    desc: "显示可用任务列表"
+    cmds:
+      - task --list
+    silent: true
+
+  autounzip:
+    desc: "自动解压工具 - 解压缩存档文件"
+    cmds:
+      - "autounzip"
+
+  extract-all:
+    desc: "解压所有压缩包 - 递归处理目录下所有压缩文件"
+    cmds:
+      - "autounzip --extract-all"
+
+  extract-clipboard:
+    desc: "从剪贴板路径解压 - 读取剪贴板中的路径进行解压"
+    cmds:
+      - "autounzip --clipboard"
+
+  extract-parallel:
+    desc: "并行解压模式 - 使用多线程加速解压"
+    cmds:
+      - "autounzip --parallel"
+
+  extract-safe:
+    desc: "安全解压模式 - 保留原始文件"
+    cmds:
+      - "autounzip --safe"
+
+  test:
+    desc: "测试解压器功能"
+    cmds:
+      - "{{.PYTHON_CMD}} test_extractor.py"

@@ -16,17 +16,12 @@ from typing import Dict, List, Any, Optional, Union
 from rich.console import Console
 from rich.prompt import Confirm
 
-# 导入预设模块
-try:
-    from textual_logger import TextualLoggerManager
-except ImportError:
-    pass
 
-# 导入预设配置界面支持，优先使用rich_preset
 
-from rich_preset import create_config_app
+# 导入预设配置界面支持，现在使用 lata cli
 
-# from textual_preset import create_config_app 
+# from rich_preset import create_config_app
+# from textual_preset import create_config_app
 
 
 # 剪贴板支持
@@ -86,6 +81,8 @@ class ConfigManager:
         # 其他选项
         parser.add_argument('--dzipfile', action='store_true', 
                            help='禁用zipfile内容检查')
+        parser.add_argument('--skip-codepage', action='store_true',
+                           help='跳过代码页分析，默认使用UTF-8编码')
         
         # 保留旧的参数用于兼容性
         parser.add_argument('-f', '--formats', nargs='+', 
@@ -119,6 +116,15 @@ class ConfigManager:
                 "checkbox_options": ["delete_after","clipboard","flatten_single_folder"],
                 "input_values": {
                     "prefix": "[#a]",
+                }
+            },
+
+            "jxl解压": {
+                "description": "jxl解压模式",
+                "checkbox_options": ["delete_after","clipboard","flatten_single_folder"],
+                "input_values": {
+                    "prefix": "[#a]",
+                    "include": "jxl"
                 }
             },
             "扁平化解压": {
@@ -187,7 +193,8 @@ class ConfigManager:
                 '--no-parallel': getattr(parsed_args, 'no_parallel', False),
                 '--part': getattr(parsed_args, 'part', False),
                 '--dzipfile': getattr(parsed_args, 'dzipfile', False),
-                '--flatten-single-folder': getattr(parsed_args, 'flatten_single_folder', False)
+                '--flatten-single-folder': getattr(parsed_args, 'flatten_single_folder', False),
+                '--skip-codepage': getattr(parsed_args, 'skip_codepage', False)
             },
             'inputs': {
                 '--path': target_path,
@@ -206,28 +213,26 @@ class ConfigManager:
         return params
     
     def launch_config_app(self) -> Dict[str, Any]:
-        """启动配置界面，返回用户选择的配置"""
-        if create_config_app is None:
-            console.print("[red]错误: 未找到配置界面支持模块[/red]")
+        """启动配置界面，使用 lata cli"""
+        try:
+            import subprocess
+            from pathlib import Path
+
+            # 获取脚本所在目录
+            script_dir = Path(__file__).parent
+
+            # 启动 lata cli
+            result = subprocess.run(
+                "lata",
+                cwd=script_dir
+            )
+
+            return result.returncode
+
+        except Exception as e:
+            console.print(f"[red]启动 lata cli 失败: {e}[/red]")
+            console.print("[yellow]请通过命令行参数运行。[/yellow]")
             return None
-        
-        # 使用rich_preset版本的create_config_app
-        if USE_RICH:
-            result = create_config_app(
-                program=sys.argv[0],
-                title="自动解压工具",
-                parser=self.parser,  # 使用命令行解析器自动生成选项
-                preset_configs=self.preset_configs,  # 添加预设配置
-            )
-            return result
-        else:
-            # 使用Textual版本的create_config_app
-            app = create_config_app(
-                program=sys.argv[0],
-                title="自动解压工具",
-                parser=self.parser,
-                preset_configs=self.preset_configs,
-            )
             app.run()
             return app
     def should_use_config_app(self, args=None) -> bool:

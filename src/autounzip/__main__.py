@@ -371,12 +371,9 @@ def main():
         # 检查是否应该使用配置界面
         if config_manager.should_use_config_app():
             # 启动配置界面
-            params = config_manager.launch_config_app()            
-            if params:
-                    return run_with_params(params)
-            else:
-                    console.print("[yellow]已取消操作[/yellow]")
-                    return 0
+            config_manager.launch_config_app()
+            # 配置界面模式下直接返回
+            return 0
         else:
             # 使用命令行参数
             params = config_manager.parse_command_line()
