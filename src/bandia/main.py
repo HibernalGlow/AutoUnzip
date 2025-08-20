@@ -10,6 +10,7 @@ from typing import Iterable, List
 import pyperclip
 from send2trash import send2trash
 from loguru import logger
+from datetime import datetime
 from rich.console import Console
 from rich.prompt import Confirm, Prompt
 from rich.table import Table
@@ -17,7 +18,6 @@ from rich.table import Table
 console = Console()
 
 BZ_EXECUTABLE_NAMES = ["bz.exe", "bandizip", "Bandizip", "BZ.exe"]
-from loguru import logger
 
 def setup_logger(app_name="app", project_root=None, console_output=True):
     """配置 Loguru 日志系统
@@ -77,7 +77,8 @@ def setup_logger(app_name="app", project_root=None, console_output=True):
     logger.info(f"日志系统已初始化，应用名称: {app_name}")
     return logger, config_info
 
-logger, config_info = setup_logger(app_name="auto_unzip", console_output=True)
+# 初始化模块级 logger
+logger, config_info = setup_logger(app_name="bandia", console_output=True)
 
 
 def find_bz_executable(candidate_dirs: Iterable[Path] | None = None) -> Path | None:

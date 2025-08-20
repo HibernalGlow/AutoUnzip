@@ -39,8 +39,9 @@ dev = [
 [project.scripts]
 autounzip = "autounzip.__main__:main"
 bandia = "bandia.main:main"
+grepz = "grepz.cli:main"
 [tool.setuptools]
-packages = ["autounzip", "bandia"]
+packages = ["autounzip", "bandia", "grepz"]
 package-dir = {"" = "src"}
 [build-system]
 requires = ["setuptools>=61.0.0", "wheel"]
