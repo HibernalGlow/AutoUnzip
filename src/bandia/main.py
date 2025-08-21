@@ -193,7 +193,15 @@ def run_once(paths: List[Path], bz_path: Path, sleep_after: float = 0.0, delete:
         try:
             logger.debug("执行命令: " + " ".join(cmd))
             # 隐藏原生命令行输出：捕获 stdout/stderr，失败时再显示
-            proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+            # 指定 encoding 与 errors，避免在含有非本地编码字节时触发 UnicodeDecodeError
+            proc = subprocess.run(
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+            )
         except Exception as e:  # noqa
             logger.exception(f"执行失败 {p}: {e}")
             continue

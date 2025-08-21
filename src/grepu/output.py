@@ -7,7 +7,7 @@ from .config import AppConfig
 console = Console()
 
 def build_table(result: ScanResult, cfg: AppConfig) -> Table:
-    table = Table(title="grepz 扫描结果", show_lines=False)
+    table = Table(title="grepu 扫描结果", show_lines=False)
     table.add_column("Archive", overflow="fold")
     table.add_column("Entry", overflow="fold")
     table.add_column("Reason", overflow="fold")

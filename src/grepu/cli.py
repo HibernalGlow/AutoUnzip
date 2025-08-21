@@ -16,7 +16,7 @@ console = Console()
 
 
 def parse_args():
-    p = argparse.ArgumentParser("grepz", description="ZIP 内文件名匹配 (UTF-8 模式)")
+    p = argparse.ArgumentParser("grepu", description="ZIP 内文件名匹配 (UTF-8 模式)")
     p.add_argument("paths", nargs="*", help="zip/目录 路径；为空尝试剪贴板")
     p.add_argument("-c", "--config", help="TOML 配置")
     p.add_argument("--jobs", type=int)
