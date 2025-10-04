@@ -1,2 +1,0 @@
-a file whose name contains spaces
-it mentions avif once

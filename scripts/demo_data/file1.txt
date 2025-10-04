@@ -1,4 +1,0 @@
-Hello world
-This file mentions avif and AVIF.
-Line with Avif in mixed case
-Another line with hello

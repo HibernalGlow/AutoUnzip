@@ -294,8 +294,14 @@ def main():  # CLI 入口（一次性执行）
     # 若仍无 => 交互获取
     if not collected:
         console.print("[yellow]未获取到任何路径，进入交互模式。[/yellow]")
-        choice = Prompt.ask("来源", choices=["1", "2"], default="1", show_choices=False, show_default=True, 
-                             prompt_suffix=" (1=手动多行 2=剪贴板)> ")
+        # 兼容不同版本 rich：不使用 prompt_suffix，直接把提示写入问题文本
+        choice = Prompt.ask(
+            "来源 (1=手动多行 2=剪贴板)",
+            choices=["1", "2"],
+            default="1",
+            show_choices=False,
+            show_default=True,
+        )
         if choice == "2":
             add_clipboard()
         else:

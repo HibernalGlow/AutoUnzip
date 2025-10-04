@@ -40,6 +40,7 @@ dev = [
 autounzip = "autounzip.__main__:main"
 bandia = "bandia.main:main"
 grepu = "grepu.cli:main"
+"7grep" = "grepu.cli:main"
 [tool.setuptools]
 packages = ["autounzip", "bandia", "grepu"]
 package-dir = {"" = "src"}
