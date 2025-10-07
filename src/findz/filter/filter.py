@@ -181,10 +181,14 @@ class FilterExpression:
                 node.regex_cache = re.compile(pattern)
             else:
                 # Convert SQL LIKE to regex
-                # Escape special regex chars except % and _
+                # First, replace SQL wildcards with placeholders
+                pattern = pattern.replace("%", "\x00")  # Placeholder for %
+                pattern = pattern.replace("_", "\x01")  # Placeholder for _
+                # Then escape regex special chars
                 pattern = re.escape(pattern)
-                pattern = pattern.replace(r"\%", ".*")
-                pattern = pattern.replace(r"\_", ".")
+                # Finally, replace placeholders with regex equivalents
+                pattern = pattern.replace("\x00", ".*")
+                pattern = pattern.replace("\x01", ".")
                 pattern = "^" + pattern + "$"
                 
                 flags = re.IGNORECASE if node.op == "ILIKE" else 0

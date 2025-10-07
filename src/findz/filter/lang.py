@@ -142,67 +142,79 @@ def _parse_symbol(s, loc, toks):
 
 def _make_binary_op(tokens):
     """Create binary operation from infix notation."""
-    result = tokens[0][0]
-    for i in range(1, len(tokens[0]), 2):
-        op = tokens[0][i]
-        right = tokens[0][i + 1]
-        result = BinaryOp(op, result, right)
-    return result
+    # tokens is a ParseResults, tokens[0] is first element (left operand, already parsed)
+    # tokens[1] is operator string, tokens[2] is right operand (already parsed)
+    if len(tokens) == 3:
+        # Simple binary operation: left op right
+        return BinaryOp(tokens[1], tokens[0], tokens[2])
+    else:
+        # Multiple operations (shouldn't happen with current grammar)
+        result = tokens[0]
+        for i in range(1, len(tokens), 2):
+            op = tokens[i]
+            right = tokens[i + 1]
+            result = BinaryOp(op, result, right)
+        return result
 
 
 def _make_like_op(tokens):
     """Create LIKE/ILIKE/RLIKE operation."""
-    toks = tokens[0]
-    left = toks[0]
+    # tokens is a flat list: [left, 'LIKE'/'NOT', ...] or [left, 'NOT', 'LIKE', ...]
+    left = tokens[0]
     negated = False
     idx = 1
     
-    if len(toks) > idx and toks[idx].upper() == "NOT":
+    # Check for NOT keyword (it's a string)
+    if len(tokens) > idx and isinstance(tokens[idx], str) and tokens[idx].upper() == "NOT":
         negated = True
         idx += 1
     
-    op = toks[idx].upper()
-    right = toks[idx + 1]
+    # Get the operator keyword (LIKE, ILIKE, RLIKE)
+    op = tokens[idx] if isinstance(tokens[idx], str) else str(tokens[idx])
+    op = op.upper()
+    right = tokens[idx + 1]
     
     return LikeOp(op, left, right, negated)
 
 
 def _make_between_op(tokens):
     """Create BETWEEN operation."""
-    toks = tokens[0]
-    expr = toks[0]
+    # tokens is a flat list: [expr, 'BETWEEN'/'NOT', ...]
+    expr = tokens[0]
     negated = False
     idx = 1
     
-    if len(toks) > idx and toks[idx].upper() == "NOT":
+    # Check for NOT keyword
+    if len(tokens) > idx and isinstance(tokens[idx], str) and tokens[idx].upper() == "NOT":
         negated = True
         idx += 1
     
     # Skip "BETWEEN" keyword
     idx += 1
-    start = toks[idx]
-    # Skip "AND" keyword
+    start = tokens[idx]
+    # Skip "AND" keyword  
     idx += 2
-    end = toks[idx]
+    end = tokens[idx]
     
     return BetweenOp(expr, start, end, negated)
 
 
 def _make_in_op(tokens):
     """Create IN operation."""
-    toks = tokens[0]
-    expr = toks[0]
+    # tokens is a flat list: [expr, 'IN'/'NOT', ...]
+    expr = tokens[0]
     negated = False
     idx = 1
     
-    if len(toks) > idx and toks[idx].upper() == "NOT":
+    # Check for NOT keyword
+    if len(tokens) > idx and isinstance(tokens[idx], str) and tokens[idx].upper() == "NOT":
         negated = True
         idx += 1
     
     # Skip "IN" keyword
     idx += 1
-    # Extract values from the list
-    values = list(toks[idx])
+    # Extract values from the list (tokens[idx] should be a list/Group)
+    values = list(tokens[idx])
     
     return InOp(expr, values, negated)
 
@@ -234,9 +246,13 @@ def create_parser():
     # Literals
     size_literal = Regex(r"\d+\.?\d*[BKMGTbkmgt]").setParseAction(_parse_size_token)
     number_literal = pyparsing_common.number().setParseAction(_parse_number)
+    
+    # String literal (quoted strings)
     string_literal = (
-        pyparsing_common.quoted_string().setParseAction(lambda t: LiteralValue(t[0]))
+        Regex(r"'[^']*'|\"[^\"]*\"")
+        .setParseAction(lambda t: LiteralValue(t[0][1:-1]))  # Remove quotes
     )
+    
     bool_literal = (TRUE | FALSE).setParseAction(_parse_bool)
     
     # Identifier (symbol reference)

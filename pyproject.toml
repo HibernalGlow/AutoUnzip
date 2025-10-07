@@ -22,6 +22,10 @@ dependencies = [
     "tqdm>=4.67.1",
     "smartz @ git+https://github.com/HibernalGlow/SmartZ.git",
     "send2trash>=1.8.2",
+    "typer>=0.12.0",
+    "pyparsing>=3.0.0",
+    "py7zr>=1.0.0",
+    "rarfile>=4.2",
 ]
 
 [project.optional-dependencies]
@@ -31,6 +35,10 @@ dev = [
     "isort>=5.12.0",
     "mypy>=1.0.0",
 ]
+full = [
+    "py7zr>=0.20.0",
+    "rarfile>=4.0",
+]
 
 [project.urls]
 "Homepage" = "https://github.com/HibernalGlow/autounzip"
@@ -39,10 +47,9 @@ dev = [
 [project.scripts]
 autounzip = "autounzip.__main__:main"
 bandia = "bandia.main:main"
-grepu = "grepu.cli:main"
-"7grep" = "grepu.cli:main"
+findz = "findz.cli:main"
 [tool.setuptools]
-packages = ["autounzip", "bandia", "grepu"]
+packages = ["autounzip", "bandia", "findz"]
 package-dir = {"" = "src"}
 [build-system]
 requires = ["setuptools>=61.0.0", "wheel"]
