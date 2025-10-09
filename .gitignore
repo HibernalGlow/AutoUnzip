@@ -12,3 +12,4 @@ wheels/
 /src/autounzip/configs
 *.log
 /src/zfind
+*.txt

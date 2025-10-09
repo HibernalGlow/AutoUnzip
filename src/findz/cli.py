@@ -3,7 +3,7 @@
 import csv
 import sys
 from pathlib import Path
-from typing import Iterator, Optional
+from typing import Iterator, Optional, Union
 
 import typer
 from rich.console import Console
@@ -288,6 +288,147 @@ def interactive_mode():
     )
 
 
+def search_nested_archives(
+    paths: tuple[str, ...],
+    long: bool,
+    save_output: Optional[str],
+    ask_save: bool,
+    continue_on_error: bool,
+):
+    """
+    搜索包含嵌套压缩包的外层压缩包
+    
+    参数:
+        paths: 搜索路径
+        long: 是否显示详细信息
+        save_output: 输出文件路径
+        ask_save: 是否询问保存
+        continue_on_error: 遇到错误是否继续
+    """
+    from .find.walk import is_archive
+    import os
+    from datetime import datetime
+    
+    # 创建匹配所有文件的过滤器
+    filter_expr = create_filter("1")
+    
+    # 错误收集
+    errors = []
+    def error_handler(msg: str) -> None:
+        if continue_on_error:
+            errors.append(msg)
+        else:
+            console.print(f"[bold red]错误:[/bold red] {msg}")
+            raise RuntimeError(msg)
+    
+    # 收集包含嵌套压缩包的外层压缩包
+    nested_containers = set()
+    results = []  # 用于保存结果
+    
+    with console.status("[bold cyan]搜索嵌套压缩包中...[/bold cyan]", spinner="dots"):
+        for search_path in paths:
+            params = WalkParams(
+                filter_expr=filter_expr,
+                follow_symlinks=False,
+                no_archive=False,  # 必须扫描压缩包内部
+                error_handler=error_handler,
+            )
+            
+            try:
+                for file_info in walk(search_path, params):
+                    # 检查是否在压缩包内（archive 不为空）
+                    if file_info.archive:
+                        # 检查文件本身是否是压缩包
+                        if is_archive(file_info.name):
+                            nested_containers.add(file_info.archive)
+            except Exception as e:
+                if continue_on_error:
+                    errors.append(f"{e}")
+                else:
+                    # error_handler 已经打印了错误,这里直接返回
+                    return
+    
+    # 转换为列表并排序
+    result_archives = sorted(nested_containers)
+    
+    # 显示结果数量
+    console.print(f"\n[bold cyan]找到 {len(result_archives)} 个包含嵌套压缩包的外层压缩包[/bold cyan]\n")
+    
+    # 打印结果到控制台
+    for archive_path in result_archives:
+        if long and os.path.exists(archive_path):
+            try:
+                stat = os.stat(archive_path)
+                size = format_size(stat.st_size)
+                date_str = datetime.fromtimestamp(stat.st_mtime).strftime("%Y-%m-%d %H:%M:%S")
+                line = f"{date_str} {size:>10} {archive_path}"
+            except Exception:
+                line = archive_path
+        else:
+            line = archive_path
+        
+        console.print(line)
+        results.append(line)
+    
+    # 打印错误
+    if errors:
+        console.print()
+        for error in errors[:10]:
+            console.print(f"[bold yellow]警告:[/bold yellow] {error}")
+        if len(errors) > 10:
+            console.print(f"[yellow]...还有 {len(errors) - 10} 个警告未显示[/yellow]")
+    
+    # 保存结果
+    output_content = "\n".join(results) if results else ""
+    _handle_save_output(output_content, save_output, ask_save)
+
+
+def _handle_save_output(
+    output_content: Union[str, set],
+    save_output: Optional[str],
+    ask_save: bool,
+    is_csv: bool = False,
+) -> None:
+    """处理保存输出到文件
+    
+    Args:
+        output_content: 要保存的内容（字符串或集合）
+        save_output: 输出文件路径（如果提供）
+        ask_save: 是否询问用户是否保存
+        is_csv: 是否为CSV格式
+    """
+    # 如果是集合，转换为字符串
+    if isinstance(output_content, set):
+        output_content = "\n".join(sorted(output_content))
+    
+    # 如果没有内容，不保存
+    if not output_content.strip():
+        return
+    
+    file_path = save_output
+    
+    # 如果需要询问用户
+    if ask_save and not file_path:
+        from rich.prompt import Confirm, Prompt
+        
+        should_save = Confirm.ask("\n[bold cyan]是否保存结果到文件?[/bold cyan]")
+        if should_save:
+            default_ext = ".csv" if is_csv else ".txt"
+            file_path = Prompt.ask(
+                "[bold cyan]请输入文件名[/bold cyan]",
+                default=f"findz_results{default_ext}"
+            )
+    
+    # 如果有文件路径，保存
+    if file_path:
+        try:
+            with open(file_path, "w", encoding="utf-8") as f:
+                f.write(output_content)
+            console.print(f"[bold green]✓[/bold green] 结果已保存到: {file_path}")
+        except Exception as e:
+            console.print(f"[bold red]保存文件错误:[/bold red] {e}")
+
+
 def execute_search(
     where: str,
     paths: tuple[str, ...],
@@ -298,8 +439,11 @@ def execute_search(
     follow_symlinks: bool,
     no_archive: bool,
     print_zero: bool,
+    save_output: Optional[str] = None,
+    ask_save: bool = False,
+    continue_on_error: bool = True,
 ):
-    """Execute a file search with the given parameters."""
+    """执行文件搜索"""
     # Line separator
     line_sep = "\0" if print_zero else "\n"
     
@@ -307,19 +451,24 @@ def execute_search(
     try:
         filter_expr = create_filter(where)
     except Exception as e:
-        console.print(f"[bold red]Error parsing filter:[/bold red] {e}")
+        console.print(f"[bold red]解析过滤器错误:[/bold red] {e}")
         return
     
     # Error collection
     errors = []
     
     def error_handler(msg: str) -> None:
-        errors.append(msg)
+        if continue_on_error:
+            errors.append(msg)
+        else:
+            console.print(f"[bold red]错误:[/bold red] {msg}")
+            raise RuntimeError(msg)
     
     # Walk and collect results
     all_results = []
+    output_lines = []  # 用于保存输出
     
-    with console.status("[bold cyan]Searching files...[/bold cyan]", spinner="dots"):
+    with console.status("[bold cyan]搜索文件中...[/bold cyan]", spinner="dots"):
         for search_path in paths:
             params = WalkParams(
                 filter_expr=filter_expr,
@@ -332,27 +481,78 @@ def execute_search(
                 for file_info in walk(search_path, params):
                     all_results.append(file_info)
             except Exception as e:
-                console.print(f"[bold red]Error walking {search_path}:[/bold red] {e}")
+                if continue_on_error:
+                    errors.append(f"{e}")
+                else:
+                    # error_handler 已经打印了错误,这里直接返回
+                    return
     
     # Display results count
     if not (csv_output or csv_no_head):
-        console.print(f"\n[bold cyan]Found {len(all_results)} file(s)[/bold cyan]\n")
+        console.print(f"\n[bold cyan]找到 {len(all_results)} 个文件[/bold cyan]\n")
     
-    # Print results
+    # Print results and collect output
+    import io
+    output_buffer = io.StringIO()
+    
     if csv_output:
         print_csv(iter(all_results), header=True)
+        # 重新生成用于保存
+        writer = csv.writer(output_buffer)
+        writer.writerow(FIELDS)
+        for file in all_results:
+            getter = file.context()
+            row = [str(getter(field)) if getter(field) else "" for field in FIELDS]
+            writer.writerow(row)
     elif csv_no_head:
         print_csv(iter(all_results), header=False)
+        # 重新生成用于保存
+        writer = csv.writer(output_buffer)
+        for file in all_results:
+            getter = file.context()
+            row = [str(getter(field)) if getter(field) else "" for field in FIELDS]
+            writer.writerow(row)
     else:
-        print_files(iter(all_results), long=long, archive_sep=archive_separator, line_sep=line_sep)
+        for file in all_results:
+            name = ""
+            if file.container:
+                name = file.container + archive_separator
+            name += file.path
+            
+            if long:
+                size = format_size(file.size)
+                date_str = file.mod_time.strftime("%Y-%m-%d %H:%M:%S")
+                line = f"{date_str} {size:>10} {name}"
+            else:
+                line = name
+            
+            # 使用 console.print 来正确处理所有字符
+            if print_zero:
+                console.print(line, end="\0")
+            else:
+                console.print(line)
+            
+            output_lines.append(line)
+    
+    # Handle save output
+    if csv_output or csv_no_head:
+        output_content = output_buffer.getvalue()
+    else:
+        output_content = line_sep.join(output_lines)
+    
+    _handle_save_output(output_content, save_output, ask_save, csv_output or csv_no_head)
     
     # Print errors
     if errors:
         console.print()
-        for error in errors:
-            console.print(f"[bold red]error:[/bold red] {error}")
-        console.print("[bold red]Errors were encountered![/bold red]")
-        return
+        console.print(f"[bold yellow]警告: 遇到 {len(errors)} 个错误[/bold yellow]")
+        if len(errors) <= 10:
+            for error in errors:
+                console.print(f"[yellow]  - {error}[/yellow]")
+        else:
+            for error in errors[:10]:
+                console.print(f"[yellow]  - {error}[/yellow]")
+            console.print(f"[yellow]  ... 以及 {len(errors) - 10} 个其他错误[/yellow]")
 
 
 @app.command()
@@ -402,13 +602,35 @@ def main(
         False,
         "-n",
         "--no-archive",
-        help="Disable archive support (faster for large file trees)"
+        help="禁用压缩包支持（加速大型文件树搜索）"
+    ),
+    nested: bool = typer.Option(
+        False,
+        "-N",
+        "--nested",
+        help="查找包含嵌套压缩包的外层压缩包（只输出外层压缩包路径）"
+    ),
+    save_output: Optional[str] = typer.Option(
+        None,
+        "-o",
+        "--output",
+        help="将结果保存到指定文件"
+    ),
+    ask_save: bool = typer.Option(
+        False,
+        "--ask-save",
+        help="搜索结束后询问是否保存结果"
+    ),
+    continue_on_error: bool = typer.Option(
+        True,
+        "--continue-on-error/--stop-on-error",
+        help="遇到错误时继续搜索（默认启用）"
     ),
     print_zero: bool = typer.Option(
         False,
         "-0",
         "--print0",
-        help="Use null character instead of newline (for xargs -0)"
+        help="使用空字符而非换行符分隔（配合 xargs -0）"
     ),
     version: bool = typer.Option(
         False,
@@ -460,6 +682,26 @@ def main(
         interactive_mode()
         return
     
+    # Handle nested mode (special case)
+    # When in nested mode, the first argument (where) is actually the path
+    if nested:
+        # 在嵌套模式下,如果提供了 where,它实际上是路径
+        if where and not paths:
+            search_paths = (where,)
+        elif paths:
+            search_paths = tuple(paths)
+        else:
+            search_paths = (".",)
+        
+        search_nested_archives(
+            paths=search_paths,
+            long=long,
+            save_output=save_output,
+            ask_save=ask_save,
+            continue_on_error=continue_on_error,
+        )
+        return
+    
     # Handle WHERE parameter
     if not where or where == "-":
         where = "1"  # Match everything
@@ -479,6 +721,9 @@ def main(
         follow_symlinks=follow_symlinks,
         no_archive=no_archive,
         print_zero=print_zero,
+        save_output=save_output,
+        ask_save=ask_save,
+        continue_on_error=continue_on_error,
     )
 
 

@@ -150,7 +150,7 @@ def list_files_in_tar(fullpath: str) -> list[FileInfo]:
                         size=member.size,
                         file_type=file_type,
                         container=fullpath,
-                        archive="tar",
+                        archive=fullpath,
                     )
                 )
             return files
@@ -193,7 +193,7 @@ def list_files_in_zip(fullpath: str) -> list[FileInfo]:
                         size=info.file_size,
                         file_type=file_type,
                         container=fullpath,
-                        archive="zip",
+                        archive=fullpath,
                     )
                 )
             return files
@@ -230,7 +230,7 @@ def list_files_in_7z(fullpath: str) -> list[FileInfo]:
                         size=info.uncompressed,
                         file_type=file_type,
                         container=fullpath,
-                        archive="7z",
+                        archive=fullpath,
                     )
                 )
             return files
@@ -268,7 +268,7 @@ def list_files_in_rar(fullpath: str) -> list[FileInfo]:
                         size=info.file_size,
                         file_type=file_type,
                         container=fullpath,
-                        archive="rar",
+                        archive=fullpath,
                     )
                 )
             return files
