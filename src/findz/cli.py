@@ -438,6 +438,7 @@ def execute_search(
     archive_separator: str,
     follow_symlinks: bool,
     no_archive: bool,
+    archives_only: bool,
     print_zero: bool,
     save_output: Optional[str] = None,
     ask_save: bool = False,
@@ -486,7 +487,44 @@ def execute_search(
                 else:
                     # error_handler 已经打印了错误,这里直接返回
                     return
-    
+
+    # If user requested archives-only, extract unique archive paths and print/save them
+    if archives_only:
+        # collect archive paths from results (non-empty)
+        archives = [f.archive for f in all_results if getattr(f, "archive", None)]
+        # preserve order and deduplicate
+        unique_archives = list(dict.fromkeys(archives))
+
+        # Display count
+        console.print(f"\n[bold cyan]找到 {len(unique_archives)} 个压缩包[/bold cyan]\n")
+
+        # Prepare output lines
+        out_lines: list[str] = []
+        for arch in unique_archives:
+            if long and arch and Path(arch).exists():
+                try:
+                    st = Path(arch).stat()
+                    size = format_size(st.st_size)
+                    date_str = Path(arch).stat().st_mtime
+                    # use os.stat to get mtime as float
+                    from datetime import datetime
+
+                    date_str = datetime.fromtimestamp(st.st_mtime).strftime("%Y-%m-%d %H:%M:%S")
+                    line = f"{date_str} {size:>10} {arch}"
+                except Exception:
+                    line = arch
+            else:
+                line = arch
+            console.print(line)
+            out_lines.append(line)
+
+        # Handle save
+        output_content = "\n".join(out_lines)
+        _handle_save_output(output_content, save_output, ask_save, False)
+
+        # finished
+        return
+
     # Display results count
     if not (csv_output or csv_no_head):
         console.print(f"\n[bold cyan]找到 {len(all_results)} 个文件[/bold cyan]\n")
@@ -604,6 +642,12 @@ def main(
         "--no-archive",
         help="禁用压缩包支持（加速大型文件树搜索）"
     ),
+    archives_only: bool = typer.Option(
+        False,
+        "-A",
+        "--archives-only",
+        help="只输出压缩包本身，不搜索内部"
+    ),
     nested: bool = typer.Option(
         False,
         "-N",
@@ -720,6 +764,7 @@ def main(
         archive_separator=archive_separator,
         follow_symlinks=follow_symlinks,
         no_archive=no_archive,
+        archives_only=archives_only,
         print_zero=print_zero,
         save_output=save_output,
         ask_save=ask_save,
