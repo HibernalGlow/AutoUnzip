@@ -2,6 +2,7 @@ import argparse
 import sys
 from pathlib import Path
 
+import tomllib
 from rich.console import Console
 from rich.prompt import Confirm
 from rich.table import Table
@@ -17,6 +18,32 @@ from encodeb.input_path import get_paths
 
 
 console = Console()
+
+
+def _load_presets() -> dict[str, dict[str, str]]:
+    candidates = [
+        Path.cwd() / "encodeb_presets.toml",
+        Path(__file__).with_name("presets.toml"),
+    ]
+    for p in candidates:
+        if not p.is_file():
+            continue
+        try:
+            with p.open("rb") as f:
+                data = tomllib.load(f)
+        except Exception:  # noqa: PERF203
+            console.print(f"[red]预设配置文件解析失败：{p}[/]")
+            return {}
+        presets = data.get("presets")
+        if isinstance(presets, dict):
+            normalized: dict[str, dict[str, str]] = {}
+            for name, cfg in presets.items():
+                if isinstance(cfg, dict):
+                    normalized[str(name)] = {
+                        str(k): str(v) for k, v in cfg.items() if isinstance(k, str)
+                    }
+            return normalized
+    return {}
 
 
 def _main_find(argv: list[str] | None = None) -> int:
@@ -162,14 +189,20 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument(
         "--src-encoding",
-        default="cp437",
+        default=None,
         help="Encoding that was incorrectly used to decode the original bytes.",
     )
     parser.add_argument(
         "--dst-encoding",
-        default="cp936",
+        default=None,
         help="Encoding that should be used to decode the original bytes (e.g. cp936, cp932).",
     )
+    parser.add_argument(
+        "--preset",
+        type=str,
+        help="Name of preset defined in presets TOML (e.g. cn, jp).",
+    )
+
     parser.add_argument(
         "--no-preview",
         action="store_true",
@@ -207,8 +240,31 @@ def main(argv: list[str] | None = None) -> int:
         console.print("[red]没有可用的路径，已退出。[/]")
         return 1
 
+    presets = _load_presets()
+
     src_enc = args.src_encoding
     dst_enc = args.dst_encoding
+
+    if args.preset:
+        preset = presets.get(args.preset)
+        if not preset:
+            if presets:
+                available = ", ".join(sorted(presets.keys()))
+                console.print(
+                    f"[red]未找到预设：{args.preset}[/] 可用预设: [bold]{available}[/]"
+                )
+            else:
+                console.print("[red]未找到任何预设配置文件。[/]")
+            return 1
+        if src_enc is None:
+            src_enc = preset.get("src_encoding", src_enc)
+        if dst_enc is None:
+            dst_enc = preset.get("dst_encoding", dst_enc)
+
+    if src_enc is None:
+        src_enc = "cp437"
+    if dst_enc is None:
+        dst_enc = "cp936"
 
     if not args.no_preview:
         for root_path in dir_roots:

@@ -1,0 +1,7 @@
+[presets.cn]
+src_encoding = "cp437"
+dst_encoding = "cp936"
+
+[presets.jp]
+src_encoding = "cp437"
+dst_encoding = "cp932"
