@@ -39,6 +39,18 @@ def _main_find(argv: list[str] | None = None) -> int:
         default=200,
         help="Maximum number of results per root.",
     )
+    parser.add_argument(
+        "-o",
+        "--output-file",
+        type=str,
+        help="Write all matched paths (deduplicated) to this file, one per line.",
+    )
+    parser.add_argument(
+        "-oc",
+        "--output-clipboard",
+        action="store_true",
+        help="Copy all matched paths (deduplicated) to clipboard as multi-line text.",
+    )
 
     args = parser.parse_args(argv)
 
@@ -55,6 +67,8 @@ def _main_find(argv: list[str] | None = None) -> int:
         roots = [Path(p).expanduser() for p in paths]
 
     any_result = False
+    all_matches: list[Path] = []
+
     for root in roots:
         if not root.exists():
             console.print(f"[red]路径不存在：{root}[/]")
@@ -70,7 +84,9 @@ def _main_find(argv: list[str] | None = None) -> int:
         console.print(f"[bold]扫描路径：[/]{root}")
         if matches:
             any_result = True
+            all_matches.extend(matches)
             table = Table(title="疑似乱码名称 (最多 {0} 条)".format(args.limit))
+
             table.add_column("#", justify="right", style="cyan")
             table.add_column("类型", style="magenta")
             table.add_column("路径", overflow="fold")
@@ -83,6 +99,42 @@ def _main_find(argv: list[str] | None = None) -> int:
 
     if not any_result:
         console.print("[yellow]所有路径均未检测到疑似乱码名称。[/]")
+        return 0
+
+    # 后处理：根据参数输出到文件或剪贴板
+    unique_paths: list[str] = []
+    if args.output_file or args.output_clipboard:
+        seen: set[str] = set()
+        for p in all_matches:
+            s = str(p)
+            if s not in seen:
+                seen.add(s)
+                unique_paths.append(s)
+
+    if args.output_file and unique_paths:
+        out_path = Path(args.output_file).expanduser()
+        try:
+            out_path.parent.mkdir(parents=True, exist_ok=True)
+        except Exception:
+            # 父目录可能已经存在，忽略错误
+            pass
+        with out_path.open("w", encoding="utf-8") as f:
+            for s in unique_paths:
+                f.write(s + "\n")
+        console.print(
+            f"[green]已写入 {len(unique_paths)} 条路径到文件：[/][bold]{out_path}[/]"
+        )
+
+    if args.output_clipboard and unique_paths:
+        try:
+            import pyperclip
+
+            pyperclip.copy("\n".join(unique_paths))
+            console.print(
+                f"[green]已将 {len(unique_paths)} 条路径复制到剪贴板。[/]"
+            )
+        except Exception as e:  # noqa: PERF203
+            console.print(f"[red]复制到剪贴板失败：{e}[/]")
 
     return 0
 
