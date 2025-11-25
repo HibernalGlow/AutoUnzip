@@ -61,6 +61,22 @@ def preview_mappings(
     return results
 
 
+def preview_file(
+    path: Path | str,
+    src_encoding: str = "cp437",
+    dst_encoding: str = "cp936",
+) -> list[tuple[Path, Path]]:
+    p = Path(path)
+    if not p.is_file():
+        raise ValueError(f"{p} is not a file")
+
+    new_name = _reencode_component(p.name, src_encoding, dst_encoding)
+    if new_name == p.name:
+        return []
+
+    return [(p, p.with_name(new_name))]
+
+
 def recover_tree(
     root: Path | str,
     src_encoding: str = "cp437",
@@ -106,3 +122,34 @@ def recover_tree(
         shutil.copy2(path, final_dest)
 
     return dest_root
+
+
+def recover_file(
+    path: Path | str,
+    src_encoding: str = "cp437",
+    dst_encoding: str = "cp936",
+) -> Path:
+    p = Path(path)
+    if not p.is_file():
+        raise ValueError(f"{p} is not a file")
+
+    new_name = _reencode_component(p.name, src_encoding, dst_encoding)
+    if new_name == p.name:
+        return p
+
+    dest_path = p.with_name(new_name)
+
+    final_dest = dest_path
+    if final_dest.exists():
+        stem = final_dest.stem
+        suffix = final_dest.suffix
+        i = 1
+        candidate = final_dest
+        while candidate.exists():
+            candidate = final_dest.with_name(f"{stem}_{i}{suffix}")
+            i += 1
+        final_dest = candidate
+
+    shutil.copy2(p, final_dest)
+
+    return final_dest

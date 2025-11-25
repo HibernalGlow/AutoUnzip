@@ -5,7 +5,7 @@ from rich.console import Console
 from rich.prompt import Confirm
 from rich.table import Table
 
-from encodeb.core import preview_mappings, recover_tree
+from encodeb.core import preview_file, preview_mappings, recover_file, recover_tree
 from encodeb.input_path import get_paths
 
 
@@ -25,7 +25,7 @@ def main(argv: list[str] | None = None) -> int:
         "root",
         type=str,
         nargs="?",
-        help="Path to the directory containing garbled names.",
+        help="Path to the directory or file containing garbled names.",
     )
     parser.add_argument(
         "--src-encoding",
@@ -57,25 +57,28 @@ def main(argv: list[str] | None = None) -> int:
             return 0
         roots = [Path(p).expanduser() for p in paths]
 
-    valid_roots: list[Path] = []
+    dir_roots: list[Path] = []
+    file_roots: list[Path] = []
     for root in roots:
         if not root.exists():
             console.print(f"[red]路径不存在：{root}[/]")
             continue
-        if not root.is_dir():
-            console.print(f"[red]不是目录：{root}[/]")
-            continue
-        valid_roots.append(root)
+        if root.is_dir():
+            dir_roots.append(root)
+        elif root.is_file():
+            file_roots.append(root)
+        else:
+            console.print(f"[red]不支持的路径类型：{root}[/]")
 
-    if not valid_roots:
-        console.print("[red]没有可用的目录，已退出。[/]")
+    if not dir_roots and not file_roots:
+        console.print("[red]没有可用的路径，已退出。[/]")
         return 1
 
     src_enc = args.src_encoding
     dst_enc = args.dst_encoding
 
     if not args.no_preview:
-        for root_path in valid_roots:
+        for root_path in dir_roots:
             mappings = preview_mappings(
                 root=root_path,
                 src_encoding=src_enc,
@@ -94,11 +97,29 @@ def main(argv: list[str] | None = None) -> int:
             else:
                 console.print("[yellow]没有检测到会变化的名称，预览为空。[/]")
 
-        if not Confirm.ask("确认对以上目录执行复制并应用重命名吗？", default=True):
+        for file_path in file_roots:
+            mappings = preview_file(
+                path=file_path,
+                src_encoding=src_enc,
+                dst_encoding=dst_enc,
+            )
+
+            console.print(f"[bold]文件：[/]{file_path}")
+            if mappings:
+                table = Table(title="预览：文件名称重编码结果")
+                table.add_column("原路径", overflow="fold")
+                table.add_column("新路径", overflow="fold")
+                for src, dst in mappings:
+                    table.add_row(str(src), str(dst))
+                console.print(table)
+            else:
+                console.print("[yellow]该文件名称不会发生变化。[/]")
+
+        if not Confirm.ask("确认对以上路径执行复制并应用重命名吗？", default=True):
             console.print("[yellow]操作已取消。[/]")
             return 0
 
-    for root_path in valid_roots:
+    for root_path in dir_roots:
         dest_root = recover_tree(
             root=root_path,
             src_encoding=src_enc,
@@ -107,6 +128,17 @@ def main(argv: list[str] | None = None) -> int:
 
         console.print(f"[green]已完成复制，输入目录：[/][bold]{root_path}[/]")
         console.print(f"[green]输出目录：[/][bold]{dest_root}[/]")
+
+    for file_path in file_roots:
+        dest_file = recover_file(
+            path=file_path,
+            src_encoding=src_enc,
+            dst_encoding=dst_enc,
+        )
+
+        console.print(f"[green]已完成复制，输入文件：[/][bold]{file_path}[/]")
+        console.print(f"[green]输出文件：[/][bold]{dest_file}[/]")
+
 
     return 0
 
