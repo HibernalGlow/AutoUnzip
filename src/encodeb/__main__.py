@@ -14,7 +14,7 @@ from encodeb.core import (
     recover_file,
     recover_tree,
 )
-from encodeb.input_path import get_paths
+from encodeb.input import get_paths
 
 
 console = Console()
