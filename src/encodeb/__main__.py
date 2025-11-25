@@ -1,8 +1,8 @@
-import argparse
-import sys
 from pathlib import Path
+from typing import List, Optional
 
 import tomllib
+import typer
 from rich.console import Console
 from rich.prompt import Confirm
 from rich.table import Table
@@ -18,6 +18,7 @@ from encodeb.input_path import get_paths
 
 
 console = Console()
+app = typer.Typer(add_completion=False, help="EncodeB 名称修复和乱码扫描工具")
 
 
 def _load_presets() -> dict[str, dict[str, str]]:
@@ -46,55 +47,39 @@ def _load_presets() -> dict[str, dict[str, str]]:
     return {}
 
 
-def _main_find(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(
-        prog="encodeb find",
-        description=(
-            "Scan directories and files for names that likely contain garbled "
-            "characters (based on box-drawing and other unusual symbols)."
-        ),
-    )
-    parser.add_argument(
-        "root",
-        type=str,
-        nargs="*",
+@app.command("find")
+def find_command(
+    roots: List[Path] = typer.Argument(
+        None,
         help="Paths (files or directories) to scan. Empty = use interactive / clipboard input.",
-    )
-    parser.add_argument(
-        "--limit",
-        type=int,
-        default=200,
-        help="Maximum number of results per root.",
-    )
-    parser.add_argument(
+    ),
+    limit: int = typer.Option(200, "--limit", help="Maximum number of results per root."),
+    output_file: Optional[Path] = typer.Option(
+        None,
         "-o",
         "--output-file",
-        type=str,
         help="Write all matched paths (deduplicated) to this file, one per line.",
-    )
-    parser.add_argument(
+    ),
+    output_clipboard: bool = typer.Option(
+        False,
         "-oc",
         "--output-clipboard",
-        action="store_true",
         help="Copy all matched paths (deduplicated) to clipboard as multi-line text.",
-    )
-
-    args = parser.parse_args(argv)
+    ),
+) -> None:
+    """Scan for suspicious (likely garbled) names under given paths."""
 
     console.print("[bold cyan]EncodeB Find - 疑似乱码扫描[/]")
 
-    roots: list[Path] = []
-    if args.root:
-        roots = [Path(p).expanduser() for p in args.root]
-    else:
+    if not roots:
         paths = get_paths()
         if not paths:
             console.print("[yellow]未获取到任何有效路径，已退出。[/]")
-            return 0
+            raise typer.Exit(code=0)
         roots = [Path(p).expanduser() for p in paths]
 
     any_result = False
-    all_matches: list[Path] = []
+    all_matches: List[Path] = []
 
     for root in roots:
         if not root.exists():
@@ -105,15 +90,14 @@ def _main_find(argv: list[str] | None = None) -> int:
             root=root,
             include_files=True,
             include_dirs=True,
-            limit=args.limit,
+            limit=limit,
         )
 
         console.print(f"[bold]扫描路径：[/]{root}")
         if matches:
             any_result = True
             all_matches.extend(matches)
-            table = Table(title="疑似乱码名称 (最多 {0} 条)".format(args.limit))
-
+            table = Table(title="疑似乱码名称 (最多 {0} 条)".format(limit))
             table.add_column("#", justify="right", style="cyan")
             table.add_column("类型", style="magenta")
             table.add_column("路径", overflow="fold")
@@ -126,11 +110,10 @@ def _main_find(argv: list[str] | None = None) -> int:
 
     if not any_result:
         console.print("[yellow]所有路径均未检测到疑似乱码名称。[/]")
-        return 0
+        raise typer.Exit(code=0)
 
-    # 后处理：根据参数输出到文件或剪贴板
-    unique_paths: list[str] = []
-    if args.output_file or args.output_clipboard:
+    unique_paths: List[str] = []
+    if output_file or output_clipboard:
         seen: set[str] = set()
         for p in all_matches:
             s = str(p)
@@ -138,12 +121,11 @@ def _main_find(argv: list[str] | None = None) -> int:
                 seen.add(s)
                 unique_paths.append(s)
 
-    if args.output_file and unique_paths:
-        out_path = Path(args.output_file).expanduser()
+    if output_file and unique_paths:
+        out_path = output_file.expanduser()
         try:
             out_path.parent.mkdir(parents=True, exist_ok=True)
         except Exception:
-            # 父目录可能已经存在，忽略错误
             pass
         with out_path.open("w", encoding="utf-8") as f:
             for s in unique_paths:
@@ -152,7 +134,7 @@ def _main_find(argv: list[str] | None = None) -> int:
             f"[green]已写入 {len(unique_paths)} 条路径到文件：[/][bold]{out_path}[/]"
         )
 
-    if args.output_clipboard and unique_paths:
+    if output_clipboard and unique_paths:
         try:
             import pyperclip
 
@@ -163,68 +145,52 @@ def _main_find(argv: list[str] | None = None) -> int:
         except Exception as e:  # noqa: PERF203
             console.print(f"[red]复制到剪贴板失败：{e}[/]")
 
-    return 0
 
-
-def main(argv: list[str] | None = None) -> int:
-
-    if argv is None:
-        argv = sys.argv[1:]
-
-    if argv and argv[0] == "find":
-        return _main_find(argv[1:])
-
-    parser = argparse.ArgumentParser(
-        description=(
-            "Recover garbled file and directory names by re-encoding "
-            "from a source encoding to a destination encoding and copying "
-            "to a new directory."
-        )
-    )
-    parser.add_argument(
-        "root",
-        type=str,
-        nargs="?",
-        help="Path to the directory or file containing garbled names.",
-    )
-    parser.add_argument(
+@app.callback(invoke_without_command=True)
+def main_callback(
+    ctx: typer.Context,
+    roots: List[Path] = typer.Argument(
+        None,
+        help="Path(s) to files or directories containing garbled names.",
+    ),
+    src_encoding: Optional[str] = typer.Option(
+        None,
         "--src-encoding",
-        default=None,
         help="Encoding that was incorrectly used to decode the original bytes.",
-    )
-    parser.add_argument(
+    ),
+    dst_encoding: Optional[str] = typer.Option(
+        None,
         "--dst-encoding",
-        default=None,
         help="Encoding that should be used to decode the original bytes (e.g. cp936, cp932).",
-    )
-    parser.add_argument(
+    ),
+    preset: Optional[str] = typer.Option(
+        None,
         "--preset",
-        type=str,
         help="Name of preset defined in presets TOML (e.g. cn, jp).",
-    )
-
-    parser.add_argument(
+    ),
+    no_preview: bool = typer.Option(
+        False,
         "--no-preview",
-        action="store_true",
         help="Skip interactive preview and execute directly.",
-    )
+    ),
+) -> None:
+    """Default command: preview and recover names by copying to new files/directories."""
 
-    args = parser.parse_args(argv)
+    if ctx.invoked_subcommand is not None:
+        # A subcommand (e.g. find) was invoked; skip default behavior.
+        return
 
     console.print("[bold cyan]EncodeB 名称修复工具[/]")
 
-    roots: list[Path] = []
-    if args.root:
-        roots = [Path(args.root).expanduser()]
-    else:
+    if not roots:
         paths = get_paths()
         if not paths:
             console.print("[yellow]未获取到任何有效路径，已退出。[/]")
-            return 0
+            raise typer.Exit(code=0)
         roots = [Path(p).expanduser() for p in paths]
 
-    dir_roots: list[Path] = []
-    file_roots: list[Path] = []
+    dir_roots: List[Path] = []
+    file_roots: List[Path] = []
     for root in roots:
         if not root.exists():
             console.print(f"[red]路径不存在：{root}[/]")
@@ -238,35 +204,35 @@ def main(argv: list[str] | None = None) -> int:
 
     if not dir_roots and not file_roots:
         console.print("[red]没有可用的路径，已退出。[/]")
-        return 1
+        raise typer.Exit(code=1)
 
     presets = _load_presets()
 
-    src_enc = args.src_encoding
-    dst_enc = args.dst_encoding
+    src_enc = src_encoding
+    dst_enc = dst_encoding
 
-    if args.preset:
-        preset = presets.get(args.preset)
-        if not preset:
+    if preset:
+        preset_cfg = presets.get(preset)
+        if not preset_cfg:
             if presets:
                 available = ", ".join(sorted(presets.keys()))
                 console.print(
-                    f"[red]未找到预设：{args.preset}[/] 可用预设: [bold]{available}[/]"
+                    f"[red]未找到预设：{preset}[/] 可用预设: [bold]{available}[/]"
                 )
             else:
                 console.print("[red]未找到任何预设配置文件。[/]")
-            return 1
+            raise typer.Exit(code=1)
         if src_enc is None:
-            src_enc = preset.get("src_encoding", src_enc)
+            src_enc = preset_cfg.get("src_encoding", src_enc)
         if dst_enc is None:
-            dst_enc = preset.get("dst_encoding", dst_enc)
+            dst_enc = preset_cfg.get("dst_encoding", dst_enc)
 
     if src_enc is None:
         src_enc = "cp437"
     if dst_enc is None:
         dst_enc = "cp936"
 
-    if not args.no_preview:
+    if not no_preview:
         for root_path in dir_roots:
             mappings = preview_mappings(
                 root=root_path,
@@ -306,7 +272,7 @@ def main(argv: list[str] | None = None) -> int:
 
         if not Confirm.ask("确认对以上路径执行复制并应用重命名吗？", default=True):
             console.print("[yellow]操作已取消。[/]")
-            return 0
+            raise typer.Exit(code=0)
 
     for root_path in dir_roots:
         dest_root = recover_tree(
@@ -329,8 +295,9 @@ def main(argv: list[str] | None = None) -> int:
         console.print(f"[green]输出文件：[/][bold]{dest_file}[/]")
 
 
-    return 0
+def main() -> None:  # CLI entry for setuptools
+    app()
 
 
 if __name__ == "__main__":  # pragma: no cover
-    raise SystemExit(main())
+    main()
