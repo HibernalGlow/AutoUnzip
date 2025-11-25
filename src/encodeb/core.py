@@ -4,6 +4,10 @@ import shutil
 from pathlib import Path
 from typing import Iterable
 
+SUSPICIOUS_CHARS = set(
+    "╘╙═╝║╧╞╫╔╚┌┐└┘├┤┬┴┼▓█▐▌▀▄╔╦╩╠╬"
+)
+
 
 def _reencode_component(name: str, src_encoding: str, dst_encoding: str) -> str:
     try:
@@ -75,6 +79,40 @@ def preview_file(
         return []
 
     return [(p, p.with_name(new_name))]
+
+
+def is_suspicious_name(name: str) -> bool:
+    return any(ch in SUSPICIOUS_CHARS for ch in name)
+
+
+def find_suspicious(
+    root: Path | str,
+    include_files: bool = True,
+    include_dirs: bool = True,
+    limit: int | None = 200,
+) -> list[Path]:
+    base_root = Path(root)
+    if not base_root.exists():
+        raise ValueError(f"{base_root} does not exist")
+
+    results: list[Path] = []
+
+    if base_root.is_file():
+        if include_files and is_suspicious_name(base_root.name):
+            results.append(base_root)
+        return results
+
+    for p in _iter_paths(base_root):
+        if p.is_dir() and not include_dirs:
+            continue
+        if p.is_file() and not include_files:
+            continue
+        if is_suspicious_name(p.name):
+            results.append(p)
+            if limit is not None and len(results) >= limit:
+                break
+
+    return results
 
 
 def recover_tree(

@@ -1,18 +1,99 @@
 import argparse
+import sys
 from pathlib import Path
 
 from rich.console import Console
 from rich.prompt import Confirm
 from rich.table import Table
 
-from encodeb.core import preview_file, preview_mappings, recover_file, recover_tree
+from encodeb.core import (
+    find_suspicious,
+    preview_file,
+    preview_mappings,
+    recover_file,
+    recover_tree,
+)
 from encodeb.input_path import get_paths
 
 
 console = Console()
 
 
+def _main_find(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(
+        prog="encodeb find",
+        description=(
+            "Scan directories and files for names that likely contain garbled "
+            "characters (based on box-drawing and other unusual symbols)."
+        ),
+    )
+    parser.add_argument(
+        "root",
+        type=str,
+        nargs="*",
+        help="Paths (files or directories) to scan. Empty = use interactive / clipboard input.",
+    )
+    parser.add_argument(
+        "--limit",
+        type=int,
+        default=200,
+        help="Maximum number of results per root.",
+    )
+
+    args = parser.parse_args(argv)
+
+    console.print("[bold cyan]EncodeB Find - 疑似乱码扫描[/]")
+
+    roots: list[Path] = []
+    if args.root:
+        roots = [Path(p).expanduser() for p in args.root]
+    else:
+        paths = get_paths()
+        if not paths:
+            console.print("[yellow]未获取到任何有效路径，已退出。[/]")
+            return 0
+        roots = [Path(p).expanduser() for p in paths]
+
+    any_result = False
+    for root in roots:
+        if not root.exists():
+            console.print(f"[red]路径不存在：{root}[/]")
+            continue
+
+        matches = find_suspicious(
+            root=root,
+            include_files=True,
+            include_dirs=True,
+            limit=args.limit,
+        )
+
+        console.print(f"[bold]扫描路径：[/]{root}")
+        if matches:
+            any_result = True
+            table = Table(title="疑似乱码名称 (最多 {0} 条)".format(args.limit))
+            table.add_column("#", justify="right", style="cyan")
+            table.add_column("类型", style="magenta")
+            table.add_column("路径", overflow="fold")
+            for idx, p in enumerate(matches, 1):
+                kind = "目录" if p.is_dir() else "文件"
+                table.add_row(str(idx), kind, str(p))
+            console.print(table)
+        else:
+            console.print("[green]未发现疑似乱码名称。[/]")
+
+    if not any_result:
+        console.print("[yellow]所有路径均未检测到疑似乱码名称。[/]")
+
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
+
+    if argv is None:
+        argv = sys.argv[1:]
+
+    if argv and argv[0] == "find":
+        return _main_find(argv[1:])
 
     parser = argparse.ArgumentParser(
         description=(
