@@ -48,8 +48,9 @@ full = [
 autounzip = "autounzip.__main__:main"
 bandia = "bandia.main:main"
 findz = "findz.cli:main"
+encodeb = "encodeb.__main__:main"
 [tool.setuptools]
-packages = ["autounzip", "bandia", "findz"]
+packages = ["autounzip", "bandia", "findz", "encodeb"]
 package-dir = {"" = "src"}
 [build-system]
 requires = ["setuptools>=61.0.0", "wheel"]

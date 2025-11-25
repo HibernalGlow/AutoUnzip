@@ -32,6 +32,35 @@ def _iter_paths(root: Path) -> Iterable[Path]:
         yield p
 
 
+def preview_mappings(
+    root: Path | str,
+    src_encoding: str = "cp437",
+    dst_encoding: str = "cp936",
+    limit: int | None = 50,
+) -> list[tuple[Path, Path]]:
+    base_root = Path(root)
+    if not base_root.is_dir():
+        raise ValueError(f"{base_root} is not a directory")
+
+    results: list[tuple[Path, Path]] = []
+
+    for path in _iter_paths(base_root):
+        dest_path = _build_dest_path(
+            base_root,
+            base_root,
+            path,
+            src_encoding,
+            dst_encoding,
+        )
+
+        if path.name != dest_path.name:
+            results.append((path, dest_path))
+            if limit is not None and len(results) >= limit:
+                break
+
+    return results
+
+
 def recover_tree(
     root: Path | str,
     src_encoding: str = "cp437",
