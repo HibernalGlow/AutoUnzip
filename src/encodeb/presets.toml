@@ -5,3 +5,9 @@ dst_encoding = "cp936"
 [presets.jp]
 src_encoding = "cp437"
 dst_encoding = "cp932"
+
+# 日文文件名被中文GBK错误解码的情况
+# 例如：僫乕僗儈僇 → ナースミカ
+[presets.jp_from_cn]
+src_encoding = "cp936"
+dst_encoding = "cp932"
