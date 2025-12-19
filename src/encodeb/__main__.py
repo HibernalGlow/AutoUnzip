@@ -8,6 +8,7 @@ from rich.prompt import Confirm
 from rich.table import Table
 
 from encodeb.core import (
+    Strategy,
     find_suspicious,
     preview_file,
     preview_mappings,
@@ -15,6 +16,10 @@ from encodeb.core import (
     recover_tree,
 )
 from encodeb.input import get_paths
+
+
+# 默认策略
+DEFAULT_STRATEGY = Strategy.REPLACE
 
 
 console = Console()
@@ -168,6 +173,12 @@ def main_callback(
         "--preset",
         help="Name of preset defined in presets TOML (e.g. cn, jp).",
     ),
+    strategy: Optional[Strategy] = typer.Option(
+        None,
+        "--strategy",
+        "-s",
+        help="Modify strategy: 'replace' (in-place rename, default) or 'copy' (copy to new directory).",
+    ),
     no_preview: bool = typer.Option(
         False,
         "--no-preview",
@@ -232,6 +243,21 @@ def main_callback(
     if dst_enc is None:
         dst_enc = "cp936"
 
+    # 确定策略：命令行参数 > 预设配置 > 默认值
+    final_strategy = strategy
+    if final_strategy is None and preset and preset_cfg:
+        strategy_str = preset_cfg.get("strategy")
+        if strategy_str:
+            try:
+                final_strategy = Strategy(strategy_str)
+            except ValueError:
+                console.print(f"[yellow]预设中的 strategy 值无效：{strategy_str}，使用默认值[/]")
+    if final_strategy is None:
+        final_strategy = DEFAULT_STRATEGY
+
+    strategy_desc = "原地重命名" if final_strategy == Strategy.REPLACE else "复制到新目录"
+    console.print(f"[dim]策略：{strategy_desc}[/]")
+
     if not no_preview:
         for root_path in dir_roots:
             mappings = preview_mappings(
@@ -270,7 +296,12 @@ def main_callback(
             else:
                 console.print("[yellow]该文件名称不会发生变化。[/]")
 
-        if not Confirm.ask("确认对以上路径执行复制并应用重命名吗？", default=True):
+        confirm_msg = (
+            "确认对以上路径执行原地重命名吗？"
+            if final_strategy == Strategy.REPLACE
+            else "确认对以上路径执行复制并应用重命名吗？"
+        )
+        if not Confirm.ask(confirm_msg, default=True):
             console.print("[yellow]操作已取消。[/]")
             raise typer.Exit(code=0)
 
@@ -279,20 +310,28 @@ def main_callback(
             root=root_path,
             src_encoding=src_enc,
             dst_encoding=dst_enc,
+            strategy=final_strategy,
         )
 
-        console.print(f"[green]已完成复制，输入目录：[/][bold]{root_path}[/]")
-        console.print(f"[green]输出目录：[/][bold]{dest_root}[/]")
+        if final_strategy == Strategy.REPLACE:
+            console.print(f"[green]已完成重命名：[/][bold]{root_path}[/]")
+        else:
+            console.print(f"[green]已完成复制，输入目录：[/][bold]{root_path}[/]")
+            console.print(f"[green]输出目录：[/][bold]{dest_root}[/]")
 
     for file_path in file_roots:
         dest_file = recover_file(
             path=file_path,
             src_encoding=src_enc,
             dst_encoding=dst_enc,
+            strategy=final_strategy,
         )
 
-        console.print(f"[green]已完成复制，输入文件：[/][bold]{file_path}[/]")
-        console.print(f"[green]输出文件：[/][bold]{dest_file}[/]")
+        if final_strategy == Strategy.REPLACE:
+            console.print(f"[green]已完成重命名：[/][bold]{file_path}[/] -> [bold]{dest_file}[/]")
+        else:
+            console.print(f"[green]已完成复制，输入文件：[/][bold]{file_path}[/]")
+            console.print(f"[green]输出文件：[/][bold]{dest_file}[/]")
 
 
 def main() -> None:  # CLI entry for setuptools

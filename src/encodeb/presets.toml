@@ -1,13 +1,22 @@
+# 策略 strategy: "replace" (原地重命名，默认) 或 "copy" (复制到新目录)
+
 [presets.cn]
 src_encoding = "cp437"
 dst_encoding = "cp936"
-
+strategy = "replace"
 [presets.jp]
 src_encoding = "cp437"
 dst_encoding = "cp932"
-
+strategy = "replace"
 # 日文文件名被中文GBK错误解码的情况
 # 例如：僫乕僗儈僇 → ナースミカ
 [presets.jp_from_cn]
 src_encoding = "cp936"
 dst_encoding = "cp932"
+strategy = "replace"
+
+# 示例：使用复制策略的预设
+# [presets.cn_copy]
+# src_encoding = "cp437"
+# dst_encoding = "cp936"
+# strategy = "copy"
