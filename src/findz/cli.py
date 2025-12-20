@@ -1,9 +1,14 @@
 """Command-line interface for findz."""
 
 import csv
+import json
+import os
+import re
 import sys
+from contextlib import nullcontext
+from datetime import datetime
 from pathlib import Path
-from typing import Iterator, Optional, Union
+from typing import Iterator, Optional, Union, List, Dict, Any
 
 import typer
 from rich.console import Console
@@ -13,7 +18,7 @@ from rich.table import Table
 from rich.markdown import Markdown
 
 from .filter.filter import create_filter
-from .filter.size import format_size
+from .filter.size import format_size, parse_size
 from .find.find import FIELDS, FileInfo
 from .find.walk import WalkParams, walk
 
@@ -24,6 +29,197 @@ app = typer.Typer(
     add_completion=False,
 )
 console = Console()
+
+# 缓存目录和文件
+CACHE_DIR = Path.home() / ".findz_cache"
+LAST_RESULT_FILE = CACHE_DIR / "last_result.json"
+
+
+def get_cache_dir() -> Path:
+    """获取缓存目录，不存在则创建"""
+    CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    return CACHE_DIR
+
+
+def file_info_to_dict(file_info: FileInfo) -> Dict[str, Any]:
+    """将 FileInfo 转换为字典"""
+    return {
+        'name': file_info.name,
+        'path': file_info.path,
+        'size': file_info.size,
+        'size_formatted': format_size(file_info.size),
+        'mod_time': file_info.mod_time.isoformat(),
+        'date': file_info.mod_time.strftime("%Y-%m-%d"),
+        'time': file_info.mod_time.strftime("%H:%M:%S"),
+        'type': file_info.file_type,
+        'container': file_info.container or '',
+        'archive': file_info.archive or '',
+        'ext': os.path.splitext(file_info.name)[1].lstrip('.').lower(),
+    }
+
+
+def save_results_cache(results: List[Dict[str, Any]], metadata: Dict[str, Any] = None) -> None:
+    """保存搜索结果到缓存文件"""
+    get_cache_dir()
+    cache_data = {
+        'timestamp': datetime.now().isoformat(),
+        'metadata': metadata or {},
+        'count': len(results),
+        'files': results,
+    }
+    with open(LAST_RESULT_FILE, 'w', encoding='utf-8') as f:
+        json.dump(cache_data, f, ensure_ascii=False, indent=2)
+
+
+def load_results_cache() -> Optional[Dict[str, Any]]:
+    """加载缓存的搜索结果"""
+    if not LAST_RESULT_FILE.exists():
+        return None
+    try:
+        with open(LAST_RESULT_FILE, 'r', encoding='utf-8') as f:
+            return json.load(f)
+    except Exception:
+        return None
+
+
+def parse_refine_filter(filter_str: str) -> Dict[str, Any]:
+    """
+    解析二次筛选表达式
+    
+    支持的格式:
+    - count > 10
+    - avg_size > 1M
+    - total_size < 100M
+    - ext = jpg
+    - name like test%
+    """
+    filter_str = filter_str.strip()
+    result = {}
+    
+    # 解析多个条件（用 AND 分隔）
+    conditions = re.split(r'\s+AND\s+', filter_str, flags=re.IGNORECASE)
+    
+    for cond in conditions:
+        cond = cond.strip()
+        
+        # 匹配: field op value
+        match = re.match(r'(\w+)\s*(>=|<=|!=|<>|>|<|=|LIKE|RLIKE)\s*(.+)', cond, re.IGNORECASE)
+        if match:
+            field, op, value = match.groups()
+            field = field.lower()
+            op = op.upper()
+            value = value.strip().strip('"\'')
+            
+            # 解析大小值
+            if field in ('avg_size', 'total_size', 'size'):
+                try:
+                    value = parse_size(value)
+                except:
+                    pass
+            elif field == 'count':
+                try:
+                    value = int(value)
+                except:
+                    pass
+            
+            result[field] = {'op': op, 'value': value}
+    
+    return result
+
+
+def apply_refine_filter(groups: List[Dict], filter_dict: Dict[str, Any]) -> List[Dict]:
+    """应用二次筛选条件到分组结果"""
+    def match_condition(item: Dict, field: str, op: str, value: Any) -> bool:
+        item_value = item.get(field)
+        if item_value is None:
+            return False
+        
+        if op == '=':
+            return str(item_value).lower() == str(value).lower()
+        elif op in ('!=', '<>'):
+            return str(item_value).lower() != str(value).lower()
+        elif op == '>':
+            return item_value > value
+        elif op == '<':
+            return item_value < value
+        elif op == '>=':
+            return item_value >= value
+        elif op == '<=':
+            return item_value <= value
+        elif op == 'LIKE':
+            pattern = value.replace('%', '.*').replace('_', '.')
+            return bool(re.match(pattern, str(item_value), re.IGNORECASE))
+        elif op == 'RLIKE':
+            return bool(re.search(value, str(item_value), re.IGNORECASE))
+        return True
+    
+    filtered = []
+    for group in groups:
+        match = True
+        for field, cond in filter_dict.items():
+            if not match_condition(group, field, cond['op'], cond['value']):
+                match = False
+                break
+        if match:
+            filtered.append(group)
+    
+    return filtered
+
+
+def group_files(files: List[Dict], group_by: str) -> List[Dict]:
+    """
+    按指定字段分组文件
+    
+    Args:
+        files: 文件列表
+        group_by: 分组字段 (archive/ext/dir)
+    
+    Returns:
+        分组统计列表
+    """
+    groups: Dict[str, Dict] = {}
+    
+    for f in files:
+        # 确定分组键
+        if group_by == 'archive':
+            key = f.get('archive') or f.get('container') or ''
+            if not key:
+                continue  # 跳过不在压缩包内的文件
+        elif group_by == 'ext':
+            key = f.get('ext', '') or '(无扩展名)'
+        elif group_by == 'dir':
+            full_path = f.get('container', '')
+            if full_path:
+                full_path += '//' + f.get('path', '')
+            else:
+                full_path = f.get('path', '')
+            parts = re.split(r'[/\\]|//', full_path)
+            key = '/'.join(parts[:-1]) if len(parts) > 1 else '(根目录)'
+        else:
+            key = str(f.get(group_by, ''))
+        
+        if key not in groups:
+            groups[key] = {
+                'key': key,
+                'name': key.split('/')[-1] if '/' in key else key,
+                'count': 0,
+                'total_size': 0,
+                'files': [],
+            }
+        
+        groups[key]['count'] += 1
+        groups[key]['total_size'] += f.get('size', 0)
+        groups[key]['files'].append(f)
+    
+    # 计算平均大小
+    result = []
+    for g in groups.values():
+        g['avg_size'] = g['total_size'] / g['count'] if g['count'] > 0 else 0
+        g['avg_size_formatted'] = format_size(g['avg_size'])
+        g['total_size_formatted'] = format_size(g['total_size'])
+        result.append(g)
+    
+    return result
 
 
 def print_files(
@@ -435,6 +631,7 @@ def execute_search(
     long: bool,
     csv_output: bool,
     csv_no_head: bool,
+    json_output: bool,
     archive_separator: str,
     follow_symlinks: bool,
     no_archive: bool,
@@ -443,8 +640,14 @@ def execute_search(
     save_output: Optional[str] = None,
     ask_save: bool = False,
     continue_on_error: bool = True,
-):
-    """执行文件搜索"""
+    no_cache: bool = False,
+    silent: bool = False,
+) -> Optional[List[Dict[str, Any]]]:
+    """执行文件搜索
+    
+    Returns:
+        搜索结果列表（字典格式），用于后续分组处理
+    """
     # Line separator
     line_sep = "\0" if print_zero else "\n"
     
@@ -467,9 +670,13 @@ def execute_search(
     
     # Walk and collect results
     all_results = []
+    all_results_dict = []  # 用于 JSON 输出和缓存
     output_lines = []  # 用于保存输出
     
-    with console.status("[bold cyan]搜索文件中...[/bold cyan]", spinner="dots"):
+    # 静默模式不显示进度
+    status_ctx = console.status("[bold cyan]搜索文件中...[/bold cyan]", spinner="dots") if not silent else nullcontext()
+    
+    with status_ctx:
         for search_path in paths:
             params = WalkParams(
                 filter_expr=filter_expr,
@@ -481,12 +688,21 @@ def execute_search(
             try:
                 for file_info in walk(search_path, params):
                     all_results.append(file_info)
+                    all_results_dict.append(file_info_to_dict(file_info))
             except Exception as e:
                 if continue_on_error:
                     errors.append(f"{e}")
                 else:
                     # error_handler 已经打印了错误,这里直接返回
                     return
+
+    # 保存结果到缓存（除非禁用）
+    if not no_cache:
+        save_results_cache(all_results_dict, {
+            'where': where,
+            'paths': list(paths),
+            'archives_only': archives_only,
+        })
 
     # If user requested archives-only, extract unique archive paths and print/save them
     if archives_only:
@@ -495,8 +711,47 @@ def execute_search(
         # preserve order and deduplicate
         unique_archives = list(dict.fromkeys(archives))
 
+        # 静默模式：只返回结果，不输出
+        if silent:
+            # 构建压缩包信息列表返回
+            archive_list = []
+            for arch in unique_archives:
+                item = {'path': arch, 'archive': arch, 'container': arch}
+                if arch and Path(arch).exists():
+                    try:
+                        st = Path(arch).stat()
+                        item['size'] = st.st_size
+                        item['size_formatted'] = format_size(st.st_size)
+                        item['name'] = Path(arch).name
+                        item['ext'] = Path(arch).suffix.lstrip('.').lower()
+                    except Exception:
+                        pass
+                archive_list.append(item)
+            return archive_list
+
         # Display count
-        console.print(f"\n[bold cyan]找到 {len(unique_archives)} 个压缩包[/bold cyan]\n")
+        if not json_output:
+            console.print(f"\n[bold cyan]找到 {len(unique_archives)} 个压缩包[/bold cyan]\n")
+
+        # JSON 输出
+        if json_output:
+            archive_list = []
+            for arch in unique_archives:
+                item = {'path': arch}
+                if arch and Path(arch).exists():
+                    try:
+                        st = Path(arch).stat()
+                        item['size'] = st.st_size
+                        item['size_formatted'] = format_size(st.st_size)
+                        item['mod_time'] = datetime.fromtimestamp(st.st_mtime).isoformat()
+                    except Exception:
+                        pass
+                archive_list.append(item)
+            
+            output_content = json.dumps(archive_list, ensure_ascii=False, indent=2)
+            console.print(output_content)
+            _handle_save_output(output_content, save_output, ask_save, False)
+            return all_results_dict
 
         # Prepare output lines
         out_lines: list[str] = []
@@ -505,10 +760,6 @@ def execute_search(
                 try:
                     st = Path(arch).stat()
                     size = format_size(st.st_size)
-                    date_str = Path(arch).stat().st_mtime
-                    # use os.stat to get mtime as float
-                    from datetime import datetime
-
                     date_str = datetime.fromtimestamp(st.st_mtime).strftime("%Y-%m-%d %H:%M:%S")
                     line = f"{date_str} {size:>10} {arch}"
                 except Exception:
@@ -523,7 +774,18 @@ def execute_search(
         _handle_save_output(output_content, save_output, ask_save, False)
 
         # finished
-        return
+        return all_results_dict
+
+    # 静默模式：只返回结果
+    if silent:
+        return all_results_dict
+
+    # JSON 输出
+    if json_output:
+        output_content = json.dumps(all_results_dict, ensure_ascii=False, indent=2)
+        console.print(output_content)
+        _handle_save_output(output_content, save_output, ask_save, False)
+        return all_results_dict
 
     # Display results count
     if not (csv_output or csv_no_head):
@@ -591,6 +853,8 @@ def execute_search(
             for error in errors[:10]:
                 console.print(f"[yellow]  - {error}[/yellow]")
             console.print(f"[yellow]  ... 以及 {len(errors) - 10} 个其他错误[/yellow]")
+    
+    return all_results_dict
 
 
 @app.command()
@@ -625,6 +889,11 @@ def main(
         "--csv-no-head",
         help="Output results as CSV without header"
     ),
+    json_output: bool = typer.Option(
+        False,
+        "--json",
+        help="输出 JSON 格式（方便 jq 处理）"
+    ),
     archive_separator: str = typer.Option(
         "//",
         "--archive-separator",
@@ -654,6 +923,29 @@ def main(
         "--nested",
         help="查找包含嵌套压缩包的外层压缩包（只输出外层压缩包路径）"
     ),
+    refine: Optional[str] = typer.Option(
+        None,
+        "-R",
+        "--refine",
+        help="二次筛选表达式，如 'avg_size > 1M' 或 'count > 10'（配合 -G 使用）"
+    ),
+    group_by: Optional[str] = typer.Option(
+        None,
+        "-G",
+        "--group-by",
+        help="分组统计: archive(压缩包)/ext(扩展名)/dir(目录)"
+    ),
+    sort_by: str = typer.Option(
+        "avg_size",
+        "-S",
+        "--sort-by",
+        help="排序字段: name/count/total_size/avg_size"
+    ),
+    sort_desc: bool = typer.Option(
+        True,
+        "--desc/--asc",
+        help="降序/升序排序（默认降序）"
+    ),
     save_output: Optional[str] = typer.Option(
         None,
         "-o",
@@ -669,6 +961,11 @@ def main(
         True,
         "--continue-on-error/--stop-on-error",
         help="遇到错误时继续搜索（默认启用）"
+    ),
+    no_result_cache: bool = typer.Option(
+        False,
+        "--no-result-cache",
+        help="不保存搜索结果到缓存（用于 --refine）"
     ),
     print_zero: bool = typer.Option(
         False,
@@ -702,6 +999,20 @@ def main(
         findz 'ext = "py" and date = today'
         
         findz 'name like "test%" and size < 1K'
+        
+    分组与二次筛选:
+    
+        # 搜索并按压缩包分组
+        findz "ext IN ('jpg', 'png')" /path -A -G archive
+        
+        # 搜索 + 分组 + 筛选平均大小 > 1M
+        findz "ext IN ('jpg', 'png')" /path -A -G archive -R "avg_size > 1M"
+        
+        # 按扩展名分组，筛选文件数 > 10
+        findz "1" /path -G ext -R "count > 10"
+        
+        # 从缓存加载上次结果进行二次筛选（不提供路径）
+        findz -G archive -R "avg_size > 1M"
     """
     
     # Show filter help
@@ -719,6 +1030,21 @@ def main(
     # Enter interactive mode if requested or no arguments provided
     if interactive:
         interactive_mode()
+        return
+    
+    # 纯二次筛选模式：没有 where 和 paths，但有 group_by 或 refine
+    if where is None and not paths and (group_by or refine):
+        execute_refine(
+            filter_expr=refine,
+            group_by=group_by,
+            sort_by=sort_by,
+            sort_desc=sort_desc,
+            json_output=json_output,
+            long=long,
+            save_output=save_output,
+            ask_save=ask_save,
+            source_files=None,  # 从缓存加载
+        )
         return
     
     # If no WHERE and no paths, enter interactive mode
@@ -755,81 +1081,164 @@ def main(
         paths = ["."]
     
     # Execute search
-    execute_search(
+    result_files = execute_search(
         where=where,
         paths=tuple(paths),
         long=long,
         csv_output=csv_output,
         csv_no_head=csv_no_head,
+        json_output=json_output if not group_by else False,  # 如果要分组，先不输出 JSON
         archive_separator=archive_separator,
         follow_symlinks=follow_symlinks,
         no_archive=no_archive,
         archives_only=archives_only,
         print_zero=print_zero,
-        save_output=save_output,
-        ask_save=ask_save,
+        save_output=save_output if not group_by else None,  # 如果要分组，先不保存
+        ask_save=ask_save if not group_by else False,
         continue_on_error=continue_on_error,
+        no_cache=no_result_cache,
+        silent=bool(group_by),  # 如果要分组，静默搜索
     )
+    
+    # 如果有分组参数，进行分组和二次筛选
+    if group_by and result_files:
+        execute_refine(
+            filter_expr=refine,
+            group_by=group_by,
+            sort_by=sort_by,
+            sort_desc=sort_desc,
+            json_output=json_output,
+            long=long,
+            save_output=save_output,
+            ask_save=ask_save,
+            source_files=result_files,
+        )
 
 
-if __name__ == "__main__":
-    app()
-
-
-
-def print_files(
-    files: Iterator[FileInfo],
-    long: bool = False,
-    archive_sep: str = "//",
-    line_sep: str = "\n",
+def execute_refine(
+    filter_expr: Optional[str],
+    group_by: Optional[str],
+    sort_by: str,
+    sort_desc: bool,
+    json_output: bool,
+    long: bool,
+    save_output: Optional[str],
+    ask_save: bool,
+    source_files: Optional[List[Dict[str, Any]]] = None,
 ) -> None:
-    """Print files in plain text format.
+    """
+    执行二次筛选
     
     Args:
-        files: Iterator of FileInfo objects
-        long: Whether to use long listing format
-        archive_sep: Separator between archive and file path
-        line_sep: Line separator character(s)
+        source_files: 直接传入的文件列表，如果为 None 则从缓存加载
     """
-    for file in files:
-        name = ""
-        if file.container:
-            name = file.container + archive_sep
-        name += file.path
+    # 获取文件列表
+    if source_files is not None:
+        files = source_files
+        console.print(f"[dim]处理 {len(files)} 个结果[/dim]")
+    else:
+        # 从缓存加载
+        cache = load_results_cache()
+        if not cache:
+            console.print("[bold red]错误:[/bold red] 没有找到缓存的搜索结果")
+            console.print("[dim]提示: 先执行一次搜索，结果会自动缓存[/dim]")
+            return
         
-        if long:
-            size = format_size(file.size)
-            date_str = file.mod_time.strftime("%Y-%m-%d %H:%M:%S")
-            sys.stdout.write(f"{date_str} {size:>10} {name}")
+        files = cache.get('files', [])
+        metadata = cache.get('metadata', {})
+        timestamp = cache.get('timestamp', '')
+        
+        console.print(f"[dim]加载缓存: {len(files)} 个文件 (搜索于 {timestamp})[/dim]")
+        if metadata:
+            console.print(f"[dim]原始查询: {metadata.get('where', '')} @ {metadata.get('paths', [])}[/dim]")
+    
+    # 如果没有分组，直接对文件列表进行筛选
+    if not group_by:
+        # 简单筛选模式：对文件列表应用过滤
+        if filter_expr:
+            filter_dict = parse_refine_filter(filter_expr)
+            filtered = apply_refine_filter(files, filter_dict)
         else:
-            sys.stdout.write(name)
+            filtered = files
         
-        sys.stdout.write(line_sep)
-        sys.stdout.flush()
-
-
-def print_csv(
-    files: Iterator[FileInfo],
-    header: bool = True,
-) -> None:
-    """Print files in CSV format.
+        console.print(f"\n[bold cyan]筛选结果: {len(filtered)} 个文件[/bold cyan]\n")
+        
+        if json_output:
+            output = json.dumps(filtered, ensure_ascii=False, indent=2)
+            console.print(output)
+            _handle_save_output(output, save_output, ask_save, False)
+        else:
+            output_lines = []
+            for f in filtered[:100]:  # 限制显示数量
+                if long:
+                    line = f"{f.get('date', '')} {f.get('time', '')} {f.get('size_formatted', ''):>10} {f.get('container', '')}//{f.get('path', '')}" if f.get('container') else f"{f.get('date', '')} {f.get('time', '')} {f.get('size_formatted', ''):>10} {f.get('path', '')}"
+                else:
+                    line = f"{f.get('container', '')}//{f.get('path', '')}" if f.get('container') else f.get('path', '')
+                console.print(line)
+                output_lines.append(line)
+            
+            if len(filtered) > 100:
+                console.print(f"[dim]... 还有 {len(filtered) - 100} 个文件[/dim]")
+            
+            _handle_save_output('\n'.join(output_lines), save_output, ask_save, False)
+        return
     
-    Args:
-        files: Iterator of FileInfo objects
-        header: Whether to print CSV header
-    """
-    writer = csv.writer(sys.stdout)
+    # 分组模式
+    if group_by not in ('archive', 'ext', 'dir'):
+        console.print(f"[bold red]错误:[/bold red] 不支持的分组字段: {group_by}")
+        console.print("[dim]支持: archive(压缩包), ext(扩展名), dir(目录)[/dim]")
+        return
     
-    if header:
-        writer.writerow(FIELDS)
+    # 执行分组
+    groups = group_files(files, group_by)
     
-    for file in files:
-        getter = file.context()
-        row = []
-        for field in FIELDS:
-            value = getter(field)
-            row.append(str(value) if value else "")
-        writer.writerow(row)
+    # 应用筛选
+    if filter_expr:
+        filter_dict = parse_refine_filter(filter_expr)
+        groups = apply_refine_filter(groups, filter_dict)
+    
+    # 排序
+    if sort_by in ('name', 'count', 'total_size', 'avg_size'):
+        groups.sort(key=lambda x: x.get(sort_by, 0), reverse=sort_desc)
+    
+    # 统计
+    total_files = sum(g['count'] for g in groups)
+    total_size = sum(g['total_size'] for g in groups)
+    
+    group_label = {'archive': '压缩包', 'ext': '扩展名', 'dir': '目录'}[group_by]
+    console.print(f"\n[bold cyan]分组结果: {len(groups)} 个{group_label}, {total_files} 个文件, 总计 {format_size(total_size)}[/bold cyan]\n")
+    
+    if json_output:
+        # JSON 输出（不包含 files 列表以减小体积）
+        output_groups = [{k: v for k, v in g.items() if k != 'files'} for g in groups]
+        output = json.dumps(output_groups, ensure_ascii=False, indent=2)
+        console.print(output)
+        _handle_save_output(output, save_output, ask_save, False)
+    else:
+        # 表格输出
+        table = Table(show_header=True, header_style="bold")
+        table.add_column(group_label, style="cyan")
+        table.add_column("数量", justify="right")
+        table.add_column("总大小", justify="right")
+        table.add_column("平均大小", justify="right", style="yellow")
+        
+        output_lines = []
+        for g in groups[:50]:  # 限制显示数量
+            table.add_row(
+                g['name'][:50] + ('...' if len(g['name']) > 50 else ''),
+                str(g['count']),
+                g['total_size_formatted'],
+                g['avg_size_formatted'],
+            )
+            output_lines.append(g['key'])
+        
+        console.print(table)
+        
+        if len(groups) > 50:
+            console.print(f"[dim]... 还有 {len(groups) - 50} 个分组[/dim]")
+        
+        # 保存时只保存路径
+        _handle_save_output('\n'.join(output_lines), save_output, ask_save, False)
 
 
 if __name__ == "__main__":
