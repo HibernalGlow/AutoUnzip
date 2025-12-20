@@ -12,6 +12,7 @@ from pyparsing import (
     ParseException,
     ParseResults,
     Regex,
+    Suppress,
     Word,
     alphanums,
     alphas,
@@ -142,17 +143,23 @@ def _parse_symbol(s, loc, toks):
 
 def _make_binary_op(tokens):
     """Create binary operation from infix notation."""
-    # tokens is a ParseResults, tokens[0] is first element (left operand, already parsed)
-    # tokens[1] is operator string, tokens[2] is right operand (already parsed)
-    if len(tokens) == 3:
-        # Simple binary operation: left op right
-        return BinaryOp(tokens[1], tokens[0], tokens[2])
+    # infixNotation 返回的 tokens 是嵌套的 ParseResults
+    # 例如: [[left, 'AND', right]] 或 [[left, 'OR', right]]
+    toks = tokens[0] if len(tokens) == 1 else tokens
+    
+    if len(toks) == 1:
+        # 只有一个元素，直接返回
+        return toks[0]
+    elif len(toks) == 3:
+        # 简单二元操作: left op right
+        return BinaryOp(toks[1], toks[0], toks[2])
     else:
-        # Multiple operations (shouldn't happen with current grammar)
-        result = tokens[0]
-        for i in range(1, len(tokens), 2):
-            op = tokens[i]
-            right = tokens[i + 1]
+        # 多个操作 (left op1 mid op2 right ...)
+        # 从左到右结合
+        result = toks[0]
+        for i in range(1, len(toks), 2):
+            op = toks[i]
+            right = toks[i + 1]
             result = BinaryOp(op, result, right)
         return result
 
@@ -201,20 +208,36 @@ def _make_between_op(tokens):
 
 def _make_in_op(tokens):
     """Create IN operation."""
-    # tokens is a flat list: [expr, 'IN'/'NOT', ...]
-    expr = tokens[0]
+    # tokens 结构 (括号已被 Suppress): [expr, (NOT)?, 'IN', Group([values...])]
+    toks = list(tokens)
+    
+    expr = toks[0]
     negated = False
     idx = 1
     
     # Check for NOT keyword
-    if len(tokens) > idx and isinstance(tokens[idx], str) and tokens[idx].upper() == "NOT":
+    if len(toks) > idx and isinstance(toks[idx], str) and toks[idx].upper() == "NOT":
         negated = True
         idx += 1
     
     # Skip "IN" keyword
     idx += 1
-    # Extract values from the list (tokens[idx] should be a list/Group)
-    values = list(tokens[idx])
+    
+    # Extract values from the Group
+    values = []
+    values_group = toks[idx]
+    
+    # 处理 Group 或 ParseResults
+    if isinstance(values_group, (list, ParseResults)):
+        for v in values_group:
+            if isinstance(v, ASTNode):
+                values.append(v)
+            elif isinstance(v, str):
+                values.append(LiteralValue(v))
+            else:
+                values.append(LiteralValue(v))
+    elif isinstance(values_group, ASTNode):
+        values.append(values_group)
     
     return InOp(expr, values, negated)
 
@@ -284,9 +307,9 @@ def create_parser():
         primary + Opt(NOT) + BETWEEN + primary + AND + primary
     ).setParseAction(_make_between_op)
     
-    # IN
+    # IN - 使用 Suppress 忽略括号
     in_expr = (
-        primary + Opt(NOT) + IN + "(" + Group(delimitedList(primary)) + ")"
+        primary + Opt(NOT) + IN + Suppress("(") + Group(delimitedList(primary)) + Suppress(")")
     ).setParseAction(_make_in_op)
     
     # Comparison
