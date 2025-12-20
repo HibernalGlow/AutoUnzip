@@ -179,7 +179,23 @@ def parse_text_paths(text: str) -> List[Path]:
     return uniq
 
 
-def run_once(paths: List[Path], bz_path: Path, sleep_after: float = 0.0, delete: bool = True, use_trash: bool = True):
+def run_once(paths: List[Path], bz_path: Path, sleep_after: float = 0.0, delete: bool = True, use_trash: bool = True, overwrite_mode: str = "overwrite"):
+    """执行解压操作
+    
+    Args:
+        overwrite_mode: 文件冲突处理模式
+            - "overwrite": 覆盖已存在文件 (-aoa)
+            - "skip": 跳过已存在文件 (-aos)
+            - "rename": 自动重命名 (-aou)
+    """
+    # 根据模式选择 bz 参数
+    mode_flags = {
+        "overwrite": "-aoa",
+        "skip": "-aos",
+        "rename": "-aou",
+    }
+    conflict_flag = mode_flags.get(overwrite_mode, "-aoa")
+    
     for p in paths:
         if not p.exists():
             logger.error(f"不存在: {p}")
@@ -188,7 +204,7 @@ def run_once(paths: List[Path], bz_path: Path, sleep_after: float = 0.0, delete:
             logger.warning(f"跳过目录: {p}")
             continue
         logger.info(f"解压: {p}")
-        cmd = [str(bz_path), "x", "-target:auto", str(p)]
+        cmd = [str(bz_path), "x", "-y", conflict_flag, "-target:auto", str(p)]
         start = time.time()
         try:
             logger.debug("执行命令: " + " ".join(cmd))
@@ -230,8 +246,12 @@ def filter_archives(paths: List[Path]) -> List[Path]:
     return [p for p in paths if p.suffix.lower() in exts]
 
 
-def run(paths: List[Path], delete: bool = True, use_trash: bool = True):
-    """执行一次批量解压。"""
+def run(paths: List[Path], delete: bool = True, use_trash: bool = True, overwrite_mode: str = "overwrite"):
+    """执行一次批量解压。
+    
+    Args:
+        overwrite_mode: 文件冲突处理模式 ("overwrite", "skip", "rename")
+    """
     bz = find_bz_executable()
     if not bz:
         logger.error("未找到 bz.exe，请设置环境变量 BANDIZIP_PATH 或加入 PATH")
@@ -244,7 +264,7 @@ def run(paths: List[Path], delete: bool = True, use_trash: bool = True):
     if not paths:
         logger.warning("未发现支持的压缩格式")
         return 0
-    run_once(paths, bz, delete=delete, use_trash=use_trash)
+    run_once(paths, bz, delete=delete, use_trash=use_trash, overwrite_mode=overwrite_mode)
     return 0
 
 
@@ -258,6 +278,9 @@ def main():  # CLI 入口（一次性执行）
     parser.add_argument("--delete", action="store_true", help="成功后删除源压缩包 (物理删除，不进回收站)")
     parser.add_argument("--trash", action="store_true", help="成功后放入回收站 (默认行为，若同时给出 --delete 优先级更高)")
     parser.add_argument("--keep", action="store_true", help="保留源压缩包 (覆盖 --delete / --trash)")
+    parser.add_argument("--overwrite", action="store_true", help="覆盖已存在文件 (默认)")
+    parser.add_argument("--skip", action="store_true", help="跳过已存在文件")
+    parser.add_argument("--rename", action="store_true", help="自动重命名已存在文件")
     parser.add_argument("--yes", action="store_true", help="非交互模式：不再询问")
     parser.add_argument("--debug", action="store_true", help="显示调试日志")
     args = parser.parse_args()
@@ -363,7 +386,15 @@ def main():  # CLI 入口（一次性执行）
             delete = Confirm.ask("解压成功后删除源压缩包?", default=False)
             use_trash = False
 
-    code = run(collected, delete=delete, use_trash=use_trash)
+    # 文件冲突处理模式
+    if args.skip:
+        overwrite_mode = "skip"
+    elif args.rename:
+        overwrite_mode = "rename"
+    else:
+        overwrite_mode = "overwrite"  # 默认覆盖
+
+    code = run(collected, delete=delete, use_trash=use_trash, overwrite_mode=overwrite_mode)
     sys.exit(code)
 
 
