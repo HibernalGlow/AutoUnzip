@@ -43,7 +43,7 @@ Repository = "https://github.com/yourusername/findz"
 "Bug Tracker" = "https://github.com/yourusername/findz/issues"
 
 [project.scripts]
-findz = "findz.cli:main"
+findz = "findz.cli:app"
 
 [build-system]
 requires = ["hatchling"]
