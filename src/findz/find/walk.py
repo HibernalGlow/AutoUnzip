@@ -12,6 +12,16 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from ..filter.filter import FilterExpression
 from .find import FileInfo, FindError, list_files_in_archive
 from .index_cache import get_global_cache, FileEntry
+from .cache import get_cache_manager
+
+
+def get_default_workers() -> int:
+    """获取默认并行工作线程数：min(cpu_count, 4)"""
+    try:
+        cpu_count = os.cpu_count() or 1
+        return min(cpu_count, 4)
+    except:
+        return 4
 
 
 class WalkParams:
@@ -22,9 +32,9 @@ class WalkParams:
         filter_expr: FilterExpression,
         follow_symlinks: bool = False,
         no_archive: bool = False,
-        archives_only: bool = False,  # 新增：只输出压缩包本身
-        use_cache: bool = True,  # 新增：是否使用索引缓存
-        max_workers: int = 4,  # 新增：并行处理线程数
+        archives_only: bool = False,  # 只输出压缩包本身
+        use_cache: bool = True,  # 是否使用索引缓存
+        max_workers: int = None,  # 并行处理线程数，None 表示使用默认值
         error_handler: Optional[Callable[[str], None]] = None,
     ):
         self.filter_expr = filter_expr
@@ -32,7 +42,7 @@ class WalkParams:
         self.no_archive = no_archive
         self.archives_only = archives_only
         self.use_cache = use_cache
-        self.max_workers = max_workers
+        self.max_workers = max_workers if max_workers is not None else get_default_workers()
         self.error_handler = error_handler
 
 

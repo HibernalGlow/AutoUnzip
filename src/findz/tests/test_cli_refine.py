@@ -9,13 +9,15 @@ from typer.testing import CliRunner
 
 from findz.cli import (
     app,
-    file_info_to_dict,
     group_files,
-    parse_refine_filter,
-    apply_refine_filter,
     save_results_cache,
     load_results_cache,
-    LAST_RESULT_FILE,
+)
+# 从 api.py 导入核心函数
+from findz.api import (
+    file_info_to_dict,
+    parse_refine_filter,
+    apply_refine_filter,
 )
 
 

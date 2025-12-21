@@ -3,12 +3,11 @@
 import csv
 import json
 import os
-import re
 import sys
 from contextlib import nullcontext
 from datetime import datetime
 from pathlib import Path
-from typing import Iterator, Optional, Union, List, Dict, Any
+from typing import Iterator, Optional, List, Dict, Any, Union
 
 import typer
 from rich.console import Console
@@ -17,10 +16,18 @@ from rich.prompt import Prompt, Confirm
 from rich.table import Table
 from rich.markdown import Markdown
 
-from .filter.filter import create_filter
-from .filter.size import format_size, parse_size
+# 从 api.py 导入核心功能（cli.py 不直接使用底层模块）
+from .api import (
+    search, search_cached, load_cache, group_by, refine,
+    sort_groups, clear_cache, file_info_to_dict,
+    parse_refine_filter, apply_refine_filter,
+    search_nested_archives as api_search_nested_archives,
+    get_unique_archives,
+)
+from .filter.size import format_size
 from .find.find import FIELDS, FileInfo
-from .find.walk import WalkParams, walk
+from .find.cache import get_cache_manager
+from .find.walk import get_default_workers
 
 
 app = typer.Typer(
@@ -30,196 +37,24 @@ app = typer.Typer(
 )
 console = Console()
 
-# 缓存目录和文件
-CACHE_DIR = Path.home() / ".findz_cache"
-LAST_RESULT_FILE = CACHE_DIR / "last_result.json"
 
-
-def get_cache_dir() -> Path:
-    """获取缓存目录，不存在则创建"""
-    CACHE_DIR.mkdir(parents=True, exist_ok=True)
-    return CACHE_DIR
-
-
-def file_info_to_dict(file_info: FileInfo) -> Dict[str, Any]:
-    """将 FileInfo 转换为字典"""
-    return {
-        'name': file_info.name,
-        'path': file_info.path,
-        'size': file_info.size,
-        'size_formatted': format_size(file_info.size),
-        'mod_time': file_info.mod_time.isoformat(),
-        'date': file_info.mod_time.strftime("%Y-%m-%d"),
-        'time': file_info.mod_time.strftime("%H:%M:%S"),
-        'type': file_info.file_type,
-        'container': file_info.container or '',
-        'archive': file_info.archive or '',
-        'ext': os.path.splitext(file_info.name)[1].lstrip('.').lower(),
-    }
-
+# ==================== 兼容旧接口 ====================
 
 def save_results_cache(results: List[Dict[str, Any]], metadata: Dict[str, Any] = None) -> None:
-    """保存搜索结果到缓存文件"""
-    get_cache_dir()
-    cache_data = {
-        'timestamp': datetime.now().isoformat(),
-        'metadata': metadata or {},
-        'count': len(results),
-        'files': results,
-    }
-    with open(LAST_RESULT_FILE, 'w', encoding='utf-8') as f:
-        json.dump(cache_data, f, ensure_ascii=False, indent=2)
+    """保存搜索结果到缓存文件（兼容旧接口）"""
+    cache = get_cache_manager()
+    cache.save_results(results, metadata)
 
 
 def load_results_cache() -> Optional[Dict[str, Any]]:
-    """加载缓存的搜索结果"""
-    if not LAST_RESULT_FILE.exists():
-        return None
-    try:
-        with open(LAST_RESULT_FILE, 'r', encoding='utf-8') as f:
-            return json.load(f)
-    except Exception:
-        return None
+    """加载缓存的搜索结果（兼容旧接口）"""
+    cache = get_cache_manager()
+    return cache.load_results()
 
 
-def parse_refine_filter(filter_str: str) -> Dict[str, Any]:
-    """
-    解析二次筛选表达式
-    
-    支持的格式:
-    - count > 10
-    - avg_size > 1M
-    - total_size < 100M
-    - ext = jpg
-    - name like test%
-    """
-    filter_str = filter_str.strip()
-    result = {}
-    
-    # 解析多个条件（用 AND 分隔）
-    conditions = re.split(r'\s+AND\s+', filter_str, flags=re.IGNORECASE)
-    
-    for cond in conditions:
-        cond = cond.strip()
-        
-        # 匹配: field op value
-        match = re.match(r'(\w+)\s*(>=|<=|!=|<>|>|<|=|LIKE|RLIKE)\s*(.+)', cond, re.IGNORECASE)
-        if match:
-            field, op, value = match.groups()
-            field = field.lower()
-            op = op.upper()
-            value = value.strip().strip('"\'')
-            
-            # 解析大小值
-            if field in ('avg_size', 'total_size', 'size'):
-                try:
-                    value = parse_size(value)
-                except:
-                    pass
-            elif field == 'count':
-                try:
-                    value = int(value)
-                except:
-                    pass
-            
-            result[field] = {'op': op, 'value': value}
-    
-    return result
-
-
-def apply_refine_filter(groups: List[Dict], filter_dict: Dict[str, Any]) -> List[Dict]:
-    """应用二次筛选条件到分组结果"""
-    def match_condition(item: Dict, field: str, op: str, value: Any) -> bool:
-        item_value = item.get(field)
-        if item_value is None:
-            return False
-        
-        if op == '=':
-            return str(item_value).lower() == str(value).lower()
-        elif op in ('!=', '<>'):
-            return str(item_value).lower() != str(value).lower()
-        elif op == '>':
-            return item_value > value
-        elif op == '<':
-            return item_value < value
-        elif op == '>=':
-            return item_value >= value
-        elif op == '<=':
-            return item_value <= value
-        elif op == 'LIKE':
-            pattern = value.replace('%', '.*').replace('_', '.')
-            return bool(re.match(pattern, str(item_value), re.IGNORECASE))
-        elif op == 'RLIKE':
-            return bool(re.search(value, str(item_value), re.IGNORECASE))
-        return True
-    
-    filtered = []
-    for group in groups:
-        match = True
-        for field, cond in filter_dict.items():
-            if not match_condition(group, field, cond['op'], cond['value']):
-                match = False
-                break
-        if match:
-            filtered.append(group)
-    
-    return filtered
-
-
-def group_files(files: List[Dict], group_by: str) -> List[Dict]:
-    """
-    按指定字段分组文件
-    
-    Args:
-        files: 文件列表
-        group_by: 分组字段 (archive/ext/dir)
-    
-    Returns:
-        分组统计列表
-    """
-    groups: Dict[str, Dict] = {}
-    
-    for f in files:
-        # 确定分组键
-        if group_by == 'archive':
-            key = f.get('archive') or f.get('container') or ''
-            if not key:
-                continue  # 跳过不在压缩包内的文件
-        elif group_by == 'ext':
-            key = f.get('ext', '') or '(无扩展名)'
-        elif group_by == 'dir':
-            full_path = f.get('container', '')
-            if full_path:
-                full_path += '//' + f.get('path', '')
-            else:
-                full_path = f.get('path', '')
-            parts = re.split(r'[/\\]|//', full_path)
-            key = '/'.join(parts[:-1]) if len(parts) > 1 else '(根目录)'
-        else:
-            key = str(f.get(group_by, ''))
-        
-        if key not in groups:
-            groups[key] = {
-                'key': key,
-                'name': key.split('/')[-1] if '/' in key else key,
-                'count': 0,
-                'total_size': 0,
-                'files': [],
-            }
-        
-        groups[key]['count'] += 1
-        groups[key]['total_size'] += f.get('size', 0)
-        groups[key]['files'].append(f)
-    
-    # 计算平均大小
-    result = []
-    for g in groups.values():
-        g['avg_size'] = g['total_size'] / g['count'] if g['count'] > 0 else 0
-        g['avg_size_formatted'] = format_size(g['avg_size'])
-        g['total_size_formatted'] = format_size(g['total_size'])
-        result.append(g)
-    
-    return result
+def group_files(files: List[Dict], group_by_field: str) -> List[Dict]:
+    """按指定字段分组文件（兼容旧接口，调用 api.group_by）"""
+    return group_by(files, group_by_field)
 
 
 def print_files(
@@ -477,9 +312,11 @@ def interactive_mode():
         long=long_format,
         csv_output=csv_output,
         csv_no_head=False,
+        json_output=False,
         archive_separator="//",
         follow_symlinks=follow_symlinks,
         no_archive=False,
+        archives_only=False,
         print_zero=False,
     )
 
@@ -492,7 +329,7 @@ def search_nested_archives(
     continue_on_error: bool,
 ):
     """
-    搜索包含嵌套压缩包的外层压缩包
+    搜索包含嵌套压缩包的外层压缩包（CLI 包装函数）
     
     参数:
         paths: 搜索路径
@@ -501,13 +338,6 @@ def search_nested_archives(
         ask_save: 是否询问保存
         continue_on_error: 遇到错误是否继续
     """
-    from .find.walk import is_archive
-    import os
-    from datetime import datetime
-    
-    # 创建匹配所有文件的过滤器
-    filter_expr = create_filter("1")
-    
     # 错误收集
     errors = []
     def error_handler(msg: str) -> None:
@@ -517,35 +347,21 @@ def search_nested_archives(
             console.print(f"[bold red]错误:[/bold red] {msg}")
             raise RuntimeError(msg)
     
-    # 收集包含嵌套压缩包的外层压缩包
-    nested_containers = set()
     results = []  # 用于保存结果
     
     with console.status("[bold cyan]搜索嵌套压缩包中...[/bold cyan]", spinner="dots"):
-        for search_path in paths:
-            params = WalkParams(
-                filter_expr=filter_expr,
-                follow_symlinks=False,
-                no_archive=False,  # 必须扫描压缩包内部
+        try:
+            # 调用 api.py 的核心函数
+            result_archives = api_search_nested_archives(
+                paths=list(paths),
                 error_handler=error_handler,
             )
-            
-            try:
-                for file_info in walk(search_path, params):
-                    # 检查是否在压缩包内（archive 不为空）
-                    if file_info.archive:
-                        # 检查文件本身是否是压缩包
-                        if is_archive(file_info.name):
-                            nested_containers.add(file_info.archive)
-            except Exception as e:
-                if continue_on_error:
-                    errors.append(f"{e}")
-                else:
-                    # error_handler 已经打印了错误,这里直接返回
-                    return
-    
-    # 转换为列表并排序
-    result_archives = sorted(nested_containers)
+        except Exception as e:
+            if continue_on_error:
+                errors.append(f"{e}")
+                result_archives = []
+            else:
+                return
     
     # 显示结果数量
     console.print(f"\n[bold cyan]找到 {len(result_archives)} 个包含嵌套压缩包的外层压缩包[/bold cyan]\n")
@@ -642,21 +458,15 @@ def execute_search(
     continue_on_error: bool = True,
     no_cache: bool = False,
     silent: bool = False,
+    workers: int = None,
 ) -> Optional[List[Dict[str, Any]]]:
-    """执行文件搜索
+    """执行文件搜索（CLI 包装函数，调用 api.search）
     
     Returns:
         搜索结果列表（字典格式），用于后续分组处理
     """
     # Line separator
     line_sep = "\0" if print_zero else "\n"
-    
-    # Create filter
-    try:
-        filter_expr = create_filter(where)
-    except Exception as e:
-        console.print(f"[bold red]解析过滤器错误:[/bold red] {e}")
-        return
     
     # Error collection
     errors = []
@@ -668,7 +478,11 @@ def execute_search(
             console.print(f"[bold red]错误:[/bold red] {msg}")
             raise RuntimeError(msg)
     
-    # Walk and collect results
+    # 获取默认 workers 数量
+    if workers is None:
+        workers = get_default_workers()
+    
+    # Walk and collect results using api.search
     all_results = []
     all_results_dict = []  # 用于 JSON 输出和缓存
     output_lines = []  # 用于保存输出
@@ -677,24 +491,26 @@ def execute_search(
     status_ctx = console.status("[bold cyan]搜索文件中...[/bold cyan]", spinner="dots") if not silent else nullcontext()
     
     with status_ctx:
-        for search_path in paths:
-            params = WalkParams(
-                filter_expr=filter_expr,
+        try:
+            # 调用 api.search 进行搜索
+            for file_info in search(
+                paths=list(paths),
+                where=where,
                 follow_symlinks=follow_symlinks,
                 no_archive=no_archive,
+                archives_only=archives_only,
+                workers=workers,
+                use_cache=not no_cache,
                 error_handler=error_handler,
-            )
-            
-            try:
-                for file_info in walk(search_path, params):
-                    all_results.append(file_info)
-                    all_results_dict.append(file_info_to_dict(file_info))
-            except Exception as e:
-                if continue_on_error:
-                    errors.append(f"{e}")
-                else:
-                    # error_handler 已经打印了错误,这里直接返回
-                    return
+            ):
+                all_results.append(file_info)
+                all_results_dict.append(file_info_to_dict(file_info))
+        except Exception as e:
+            if continue_on_error:
+                errors.append(f"{e}")
+            else:
+                console.print(f"[bold red]解析过滤器错误:[/bold red] {e}")
+                return
 
     # 保存结果到缓存（除非禁用）
     if not no_cache:
@@ -706,10 +522,8 @@ def execute_search(
 
     # If user requested archives-only, extract unique archive paths and print/save them
     if archives_only:
-        # collect archive paths from results (non-empty)
-        archives = [f.archive for f in all_results if getattr(f, "archive", None)]
-        # preserve order and deduplicate
-        unique_archives = list(dict.fromkeys(archives))
+        # 使用 api 函数获取唯一压缩包
+        unique_archives = get_unique_archives(all_results)
 
         # 静默模式：只返回结果，不输出
         if silent:
@@ -979,6 +793,17 @@ def main(
         "--version",
         help="Show version information"
     ),
+    workers: Optional[int] = typer.Option(
+        None,
+        "-w",
+        "--workers",
+        help=f"并行工作线程数（默认: min(cpu_count, 4) = {get_default_workers()}）"
+    ),
+    clear_cache_flag: bool = typer.Option(
+        False,
+        "--clear-cache",
+        help="清空所有缓存数据（目录 mtime、搜索结果等）"
+    ),
     interactive: bool = typer.Option(
         False,
         "-i",
@@ -1025,6 +850,12 @@ def main(
         from . import __version__
         console.print(f"[bold cyan]findz[/bold cyan] version {__version__}")
         console.print("A Python port of zfind - search files with SQL-like syntax")
+        return
+    
+    # Clear cache if requested
+    if clear_cache_flag:
+        clear_cache()
+        console.print("[bold green]✓[/bold green] 缓存已清空")
         return
     
     # Enter interactive mode if requested or no arguments provided
@@ -1098,6 +929,7 @@ def main(
         continue_on_error=continue_on_error,
         no_cache=no_result_cache,
         silent=bool(group_by),  # 如果要分组，静默搜索
+        workers=workers,
     )
     
     # 如果有分组参数，进行分组和二次筛选
