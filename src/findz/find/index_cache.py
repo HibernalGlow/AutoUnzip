@@ -28,6 +28,7 @@ class FileEntry:
     mtime: float  # 修改时间戳
     is_archive: bool  # 是否为压缩包
     ext: str  # 扩展名
+    file_type: str = "file"  # 文件类型: file/dir/link
     archive_path: Optional[str] = None  # 如果在压缩包内，记录压缩包路径
 
 
@@ -107,6 +108,7 @@ class IndexCache:
                 mtime REAL,
                 is_archive INTEGER,
                 ext TEXT,
+                file_type TEXT DEFAULT 'file',
                 FOREIGN KEY (archive_path) REFERENCES archives(path)
             );
             
@@ -153,14 +155,15 @@ class IndexCache:
         
         # 加载文件列表
         cursor = conn.execute(
-            "SELECT name, path, size, mtime, is_archive, ext FROM files WHERE archive_path = ?",
+            "SELECT name, path, size, mtime, is_archive, ext, file_type FROM files WHERE archive_path = ?",
             (archive_path,)
         )
         
         files = [
             FileEntry(
                 name=r[0], path=r[1], size=r[2], mtime=r[3],
-                is_archive=bool(r[4]), ext=r[5], archive_path=archive_path
+                is_archive=bool(r[4]), ext=r[5], file_type=r[6] or 'file',
+                archive_path=archive_path
             )
             for r in cursor.fetchall()
         ]
@@ -203,8 +206,8 @@ class IndexCache:
         
         # 批量插入文件
         conn.executemany(
-            "INSERT INTO files (archive_path, name, path, size, mtime, is_archive, ext) VALUES (?, ?, ?, ?, ?, ?, ?)",
-            [(archive_path, f.name, f.path, f.size, f.mtime, int(f.is_archive), f.ext) for f in files]
+            "INSERT INTO files (archive_path, name, path, size, mtime, is_archive, ext, file_type) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            [(archive_path, f.name, f.path, f.size, f.mtime, int(f.is_archive), f.ext, f.file_type) for f in files]
         )
         
         conn.commit()

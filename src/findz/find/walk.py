@@ -207,12 +207,13 @@ def find_in_archive_cached(
         # 使用缓存的索引 - 直接迭代，减少内存占用
         for entry in index.files:
             # 延迟创建 FileInfo，只在需要时创建
+            # 使用缓存中存储的 file_type，而不是硬编码
             fi = FileInfo(
                 name=entry.name,
                 path=entry.path,
                 mod_time=datetime.fromtimestamp(entry.mtime),
                 size=entry.size,
-                file_type="file",
+                file_type=entry.file_type,
                 archive=archive_path,
             )
             
@@ -239,6 +240,7 @@ def find_in_archive_cached(
                             mtime=fi.mod_time.timestamp(),
                             is_archive=is_archive(fi.name),
                             ext=os.path.splitext(fi.name)[1].lstrip('.'),
+                            file_type=fi.file_type,  # 保存文件类型到缓存
                             archive_path=archive_path,
                         )
                         entries.append(entry)
