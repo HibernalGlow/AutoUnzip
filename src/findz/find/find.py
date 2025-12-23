@@ -174,12 +174,34 @@ def list_files_in_zip(fullpath: str) -> list[FileInfo]:
         with zipfile.ZipFile(fullpath, "r") as zf:
             files = []
             for info in zf.infolist():
+                # 处理文件名编码问题
+                # ZIP 文件中的中文文件名可能使用 GBK/CP936 编码
+                filename = info.filename
+                try:
+                    # 如果文件名包含非 ASCII 字符且看起来像乱码，尝试重新解码
+                    if info.flag_bits & 0x800:
+                        # UTF-8 标志位已设置，文件名已经是 UTF-8
+                        pass
+                    else:
+                        # 尝试将 CP437 编码的字节重新解码为 GBK
+                        try:
+                            filename = info.filename.encode('cp437').decode('gbk')
+                        except (UnicodeDecodeError, UnicodeEncodeError):
+                            # 如果失败，尝试其他编码
+                            try:
+                                filename = info.filename.encode('cp437').decode('utf-8')
+                            except (UnicodeDecodeError, UnicodeEncodeError):
+                                # 保持原样
+                                pass
+                except Exception:
+                    pass
+                
                 # Determine if it's a directory (ends with /)
-                if info.filename.endswith("/"):
-                    name = info.filename.rstrip("/")
+                if filename.endswith("/"):
+                    name = filename.rstrip("/")
                     file_type = "dir"
                 else:
-                    name = info.filename
+                    name = filename
                     file_type = "file"
                 
                 # Get modification time
