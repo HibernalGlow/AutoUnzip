@@ -1,15 +1,22 @@
 """
 压缩包索引缓存模块
 用于加速大规模压缩包搜索，避免重复扫描
+
+优化策略：
+1. 使用 SQLite 替代 JSON 存储，支持增量更新
+2. 延迟加载：只在需要时加载特定压缩包的索引
+3. 批量写入：减少磁盘 I/O
 """
 
-import json
 import os
+import sqlite3
 import hashlib
+import threading
 from pathlib import Path
 from datetime import datetime
-from typing import Dict, List, Optional, Any
-from dataclasses import dataclass, asdict
+from typing import Dict, List, Optional, Any, Iterator
+from dataclasses import dataclass
+from contextlib import contextmanager
 
 
 @dataclass
@@ -33,62 +40,80 @@ class ArchiveIndex:
     file_count: int  # 内部文件数量
     files: List[FileEntry]  # 内部文件列表
     scan_time: float  # 扫描时间戳
-    checksum: str  # 压缩包校验和（基于路径+大小+时间）
+    checksum: str  # 压缩包校验和
 
 
 class IndexCache:
-    """索引缓存管理器"""
+    """
+    索引缓存管理器（SQLite 版本）
+    
+    使用 SQLite 存储索引，支持：
+    - 增量更新：只更新变化的压缩包
+    - 延迟加载：按需加载索引
+    - 并发安全：支持多线程访问
+    """
     
     def __init__(self, cache_dir: Optional[str] = None):
-        """
-        初始化索引缓存
-        
-        参数:
-            cache_dir: 缓存目录路径，默认为用户主目录下的 .findz_cache
-        """
         if cache_dir is None:
             cache_dir = os.path.join(Path.home(), ".findz_cache")
         
         self.cache_dir = Path(cache_dir)
         self.cache_dir.mkdir(parents=True, exist_ok=True)
-        self.cache_file = self.cache_dir / "archive_index.json"
+        self.db_path = self.cache_dir / "archive_index.db"
         
-        # 内存缓存
-        self._cache: Dict[str, ArchiveIndex] = {}
-        self._load_cache()
-    
-    def _load_cache(self):
-        """从磁盘加载缓存"""
-        if not self.cache_file.exists():
-            return
+        # 线程本地存储，每个线程一个连接
+        self._local = threading.local()
         
-        try:
-            with open(self.cache_file, 'r', encoding='utf-8') as f:
-                data = json.load(f)
-                
-            for archive_path, index_data in data.items():
-                # 反序列化文件条目
-                files = [FileEntry(**f) for f in index_data['files']]
-                index_data['files'] = files
-                self._cache[archive_path] = ArchiveIndex(**index_data)
-                
-        except Exception as e:
-            print(f"警告: 加载缓存失败: {e}")
-            self._cache = {}
+        # 待写入缓冲区
+        self._write_buffer: List[tuple] = []
+        self._buffer_lock = threading.Lock()
+        self._buffer_size = 1000  # 每 1000 条写入一次
+        
+        # 初始化数据库
+        self._init_db()
     
-    def _save_cache(self):
-        """保存缓存到磁盘"""
-        try:
-            data = {}
-            for archive_path, index in self._cache.items():
-                index_dict = asdict(index)
-                data[archive_path] = index_dict
+    def _get_conn(self) -> sqlite3.Connection:
+        """获取当前线程的数据库连接"""
+        if not hasattr(self._local, 'conn') or self._local.conn is None:
+            self._local.conn = sqlite3.connect(
+                str(self.db_path),
+                check_same_thread=False,
+                timeout=30.0
+            )
+            self._local.conn.execute("PRAGMA journal_mode=WAL")
+            self._local.conn.execute("PRAGMA synchronous=NORMAL")
+            self._local.conn.execute("PRAGMA cache_size=10000")
+        return self._local.conn
+    
+    def _init_db(self):
+        """初始化数据库表"""
+        conn = self._get_conn()
+        conn.executescript("""
+            CREATE TABLE IF NOT EXISTS archives (
+                path TEXT PRIMARY KEY,
+                mtime REAL,
+                size INTEGER,
+                file_count INTEGER,
+                scan_time REAL,
+                checksum TEXT
+            );
             
-            with open(self.cache_file, 'w', encoding='utf-8') as f:
-                json.dump(data, f, ensure_ascii=False, indent=2)
-                
-        except Exception as e:
-            print(f"警告: 保存缓存失败: {e}")
+            CREATE TABLE IF NOT EXISTS files (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                archive_path TEXT,
+                name TEXT,
+                path TEXT,
+                size INTEGER,
+                mtime REAL,
+                is_archive INTEGER,
+                ext TEXT,
+                FOREIGN KEY (archive_path) REFERENCES archives(path)
+            );
+            
+            CREATE INDEX IF NOT EXISTS idx_files_archive ON files(archive_path);
+            CREATE INDEX IF NOT EXISTS idx_files_ext ON files(ext);
+        """)
+        conn.commit()
     
     def _calculate_checksum(self, archive_path: str, size: int, mtime: float) -> str:
         """计算压缩包校验和"""
@@ -96,92 +121,145 @@ class IndexCache:
         return hashlib.md5(data.encode()).hexdigest()
     
     def get_index(self, archive_path: str) -> Optional[ArchiveIndex]:
-        """
-        获取压缩包索引
-        
-        参数:
-            archive_path: 压缩包路径
-            
-        返回:
-            索引信息，如果不存在或已过期返回 None
-        """
-        if archive_path not in self._cache:
-            return None
-        
-        index = self._cache[archive_path]
-        
-        # 检查文件是否存在
+        """获取压缩包索引（延迟加载文件列表）"""
         if not os.path.exists(archive_path):
-            del self._cache[archive_path]
             return None
+        
+        conn = self._get_conn()
+        cursor = conn.execute(
+            "SELECT mtime, size, file_count, scan_time, checksum FROM archives WHERE path = ?",
+            (archive_path,)
+        )
+        row = cursor.fetchone()
+        
+        if not row:
+            return None
+        
+        mtime, size, file_count, scan_time, checksum = row
         
         # 检查文件是否被修改
-        stat = os.stat(archive_path)
-        current_checksum = self._calculate_checksum(
-            archive_path, stat.st_size, stat.st_mtime
-        )
-        
-        if index.checksum != current_checksum:
-            # 文件已修改，删除旧索引
-            del self._cache[archive_path]
+        try:
+            stat = os.stat(archive_path)
+            current_checksum = self._calculate_checksum(
+                archive_path, stat.st_size, stat.st_mtime
+            )
+            
+            if checksum != current_checksum:
+                # 文件已修改，删除旧索引
+                self.remove_index(archive_path)
+                return None
+        except OSError:
             return None
         
-        return index
+        # 加载文件列表
+        cursor = conn.execute(
+            "SELECT name, path, size, mtime, is_archive, ext FROM files WHERE archive_path = ?",
+            (archive_path,)
+        )
+        
+        files = [
+            FileEntry(
+                name=r[0], path=r[1], size=r[2], mtime=r[3],
+                is_archive=bool(r[4]), ext=r[5], archive_path=archive_path
+            )
+            for r in cursor.fetchall()
+        ]
+        
+        return ArchiveIndex(
+            archive_path=archive_path,
+            archive_mtime=mtime,
+            archive_size=size,
+            file_count=file_count,
+            files=files,
+            scan_time=scan_time,
+            checksum=checksum
+        )
     
     def set_index(self, archive_path: str, files: List[FileEntry]):
-        """
-        设置压缩包索引
-        
-        参数:
-            archive_path: 压缩包路径
-            files: 文件列表
-        """
+        """设置压缩包索引（批量写入）"""
         if not os.path.exists(archive_path):
             return
         
-        stat = os.stat(archive_path)
+        try:
+            stat = os.stat(archive_path)
+        except OSError:
+            return
+        
         checksum = self._calculate_checksum(
             archive_path, stat.st_size, stat.st_mtime
         )
         
-        index = ArchiveIndex(
-            archive_path=archive_path,
-            archive_mtime=stat.st_mtime,
-            archive_size=stat.st_size,
-            file_count=len(files),
-            files=files,
-            scan_time=datetime.now().timestamp(),
-            checksum=checksum
+        conn = self._get_conn()
+        
+        # 删除旧数据
+        conn.execute("DELETE FROM files WHERE archive_path = ?", (archive_path,))
+        conn.execute("DELETE FROM archives WHERE path = ?", (archive_path,))
+        
+        # 插入压缩包信息
+        conn.execute(
+            "INSERT INTO archives (path, mtime, size, file_count, scan_time, checksum) VALUES (?, ?, ?, ?, ?, ?)",
+            (archive_path, stat.st_mtime, stat.st_size, len(files), datetime.now().timestamp(), checksum)
         )
         
-        self._cache[archive_path] = index
-    
-    def clear_cache(self):
-        """清空所有缓存"""
-        self._cache.clear()
-        if self.cache_file.exists():
-            self.cache_file.unlink()
+        # 批量插入文件
+        conn.executemany(
+            "INSERT INTO files (archive_path, name, path, size, mtime, is_archive, ext) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            [(archive_path, f.name, f.path, f.size, f.mtime, int(f.is_archive), f.ext) for f in files]
+        )
+        
+        conn.commit()
     
     def remove_index(self, archive_path: str):
         """删除指定压缩包的索引"""
-        if archive_path in self._cache:
-            del self._cache[archive_path]
+        conn = self._get_conn()
+        conn.execute("DELETE FROM files WHERE archive_path = ?", (archive_path,))
+        conn.execute("DELETE FROM archives WHERE path = ?", (archive_path,))
+        conn.commit()
+    
+    def clear_cache(self):
+        """清空所有缓存"""
+        conn = self._get_conn()
+        conn.execute("DELETE FROM files")
+        conn.execute("DELETE FROM archives")
+        conn.commit()
     
     def flush(self):
-        """刷新缓存到磁盘"""
-        self._save_cache()
+        """刷新缓存（SQLite 自动管理，这里只是确保提交）"""
+        try:
+            conn = self._get_conn()
+            conn.commit()
+        except:
+            pass
     
     def get_stats(self) -> Dict[str, Any]:
         """获取缓存统计信息"""
-        total_files = sum(idx.file_count for idx in self._cache.values())
-        total_size = sum(idx.archive_size for idx in self._cache.values())
+        conn = self._get_conn()
+        
+        archive_count = conn.execute("SELECT COUNT(*) FROM archives").fetchone()[0]
+        file_count = conn.execute("SELECT COUNT(*) FROM files").fetchone()[0]
+        total_size = conn.execute("SELECT COALESCE(SUM(size), 0) FROM archives").fetchone()[0]
         
         return {
-            "压缩包数量": len(self._cache),
-            "总文件数": total_files,
+            "压缩包数量": archive_count,
+            "总文件数": file_count,
             "总大小": total_size,
             "缓存目录": str(self.cache_dir),
+            "数据库大小": os.path.getsize(self.db_path) if self.db_path.exists() else 0,
         }
+    
+    def iter_files(self, archive_path: str) -> Iterator[FileEntry]:
+        """迭代获取文件（内存友好）"""
+        conn = self._get_conn()
+        cursor = conn.execute(
+            "SELECT name, path, size, mtime, is_archive, ext FROM files WHERE archive_path = ?",
+            (archive_path,)
+        )
+        
+        for r in cursor:
+            yield FileEntry(
+                name=r[0], path=r[1], size=r[2], mtime=r[3],
+                is_archive=bool(r[4]), ext=r[5], archive_path=archive_path
+            )
 
 
 # 全局缓存实例

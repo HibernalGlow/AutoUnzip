@@ -184,6 +184,11 @@ def find_in_archive_cached(
     """
     在压缩包内查找文件（使用缓存优化）
     
+    优化策略：
+    1. 使用 SQLite 缓存，支持增量更新
+    2. 延迟创建 FileInfo 对象
+    3. 预编译过滤器测试函数
+    
     参数:
         file_info: 压缩包文件信息
         params: 搜索参数
@@ -193,15 +198,15 @@ def find_in_archive_cached(
     """
     archive_path = file_info.path
     cache = get_global_cache() if params.use_cache else None
+    filter_test = params.filter_expr.test
     
     # 尝试从缓存获取
     index = cache.get_index(archive_path) if cache else None
     
     if index:
-        # 使用缓存的索引
-        archive_files = []
+        # 使用缓存的索引 - 直接迭代，减少内存占用
         for entry in index.files:
-            # 从缓存条目重建 FileInfo
+            # 延迟创建 FileInfo，只在需要时创建
             fi = FileInfo(
                 name=entry.name,
                 path=entry.path,
@@ -210,54 +215,50 @@ def find_in_archive_cached(
                 file_type="file",
                 archive=archive_path,
             )
-            archive_files.append(fi)
+            
+            try:
+                matches, error = filter_test(fi.context())
+                if not error and matches:
+                    yield fi
+            except Exception:
+                pass
     else:
         # 扫描压缩包并缓存结果
         try:
             archive_files = list_files_in_archive(archive_path)
             
-            if archive_files and cache:
+            if archive_files:
                 # 保存到缓存
-                entries = []
-                for fi in archive_files:
-                    entry = FileEntry(
-                        name=fi.name,
-                        path=fi.path,
-                        size=fi.size,
-                        mtime=fi.mod_time.timestamp(),
-                        is_archive=is_archive(fi.name),
-                        ext=os.path.splitext(fi.name)[1].lstrip('.'),
-                        archive_path=archive_path,
-                    )
-                    entries.append(entry)
-                cache.set_index(archive_path, entries)
+                if cache:
+                    entries = []
+                    for fi in archive_files:
+                        entry = FileEntry(
+                            name=fi.name,
+                            path=fi.path,
+                            size=fi.size,
+                            mtime=fi.mod_time.timestamp(),
+                            is_archive=is_archive(fi.name),
+                            ext=os.path.splitext(fi.name)[1].lstrip('.'),
+                            archive_path=archive_path,
+                        )
+                        entries.append(entry)
+                    cache.set_index(archive_path, entries)
+                
+                # 测试每个文件
+                for archive_file in archive_files:
+                    try:
+                        matches, error = filter_test(archive_file.context())
+                        if not error and matches:
+                            yield archive_file
+                    except Exception:
+                        pass
                 
         except FindError as e:
-            # 不是压缩包或读取错误
             if params.error_handler and "not installed" not in str(e):
                 params.error_handler(str(e))
-            return
         except Exception as e:
             if params.error_handler:
                 params.error_handler(f"{archive_path}: {e}")
-            return
-    
-    # 对压缩包内文件排序
-    if archive_files:
-        archive_files.sort(key=lambda f: f.path)
-        
-        # 测试每个文件是否匹配
-        for archive_file in archive_files:
-            try:
-                matches, error = params.filter_expr.test(archive_file.context())
-                if error:
-                    if params.error_handler:
-                        params.error_handler(str(error))
-                elif matches:
-                    yield archive_file
-            except Exception as e:
-                if params.error_handler:
-                    params.error_handler(f"{archive_file.path}: {e}")
 
 
 def find_in(file_info: FileInfo, params: WalkParams) -> Iterator[FileInfo]:

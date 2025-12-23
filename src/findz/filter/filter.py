@@ -26,6 +26,17 @@ class FilterExpression:
     
     def __init__(self, ast: ASTNode):
         self.ast = ast
+        # 检测是否是简单的 "1" 或 "true" 过滤器（匹配所有）
+        self._is_match_all = self._check_match_all(ast)
+    
+    def _check_match_all(self, node: ASTNode) -> bool:
+        """检查是否是匹配所有的过滤器"""
+        if isinstance(node, LiteralValue):
+            if isinstance(node.value, bool):
+                return node.value
+            elif isinstance(node.value, int):
+                return node.value != 0
+        return False
     
     def test(self, getter: VariableGetter) -> tuple[bool, Optional[Exception]]:
         """Test whether the variables match this filter.
@@ -36,6 +47,10 @@ class FilterExpression:
         Returns:
             Tuple of (matches, error). If error is not None, matches is False.
         """
+        # 快速路径：匹配所有
+        if self._is_match_all:
+            return (True, None)
+        
         try:
             result = self._eval(self.ast, getter)
             return (result.to_bool(), None)
@@ -229,26 +244,42 @@ class FilterExpression:
         """Evaluate an IN operation."""
         expr = self._eval(node.expr, getter)
         
-        for val_node in node.values:
-            val = self._eval(val_node, getter)
-            
-            # Number comparison
-            if expr.number is not None and val.number is not None:
-                if expr.number == val.number:
-                    result = True
-                    break
-            # Text comparison
-            elif expr.text is not None and val.text is not None:
-                if expr.text == val.text:
-                    result = True
-                    break
-            # Boolean comparison
-            elif expr.boolean is not None and val.boolean is not None:
-                if expr.boolean == val.boolean:
-                    result = True
-                    break
+        # 使用缓存的值集合加速查找
+        if not hasattr(node, '_value_cache'):
+            # 预计算所有值
+            node._text_values = set()
+            node._number_values = set()
+            for val_node in node.values:
+                if isinstance(val_node, LiteralValue):
+                    if isinstance(val_node.value, str):
+                        node._text_values.add(val_node.value)
+                    elif isinstance(val_node.value, (int, float)):
+                        node._number_values.add(val_node.value)
+            node._value_cache = True
+        
+        # 快速路径：使用 set 查找
+        if expr.text is not None and node._text_values:
+            result = expr.text in node._text_values
+        elif expr.number is not None and node._number_values:
+            result = expr.number in node._number_values
         else:
+            # 回退到逐个比较
             result = False
+            for val_node in node.values:
+                val = self._eval(val_node, getter)
+                
+                if expr.number is not None and val.number is not None:
+                    if expr.number == val.number:
+                        result = True
+                        break
+                elif expr.text is not None and val.text is not None:
+                    if expr.text == val.text:
+                        result = True
+                        break
+                elif expr.boolean is not None and val.boolean is not None:
+                    if expr.boolean == val.boolean:
+                        result = True
+                        break
         
         if node.negated:
             result = not result
