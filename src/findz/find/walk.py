@@ -337,6 +337,7 @@ def walk(
     1. 流式处理：边扫描边返回结果，减少内存占用
     2. 批量处理压缩包：收集一批压缩包后并行处理
     3. 进度回调：实时报告扫描进度
+    4. 使用 os.scandir 减少系统调用
     
     参数:
         root: 起始根目录
@@ -354,10 +355,16 @@ def walk(
     archive_batch: List[FileInfo] = []
     batch_size = params.batch_size
     
+    # 进度回调节流
+    last_progress_report = 0
+    progress_interval = 500  # 每 500 个文件报告一次
+    
     def report_progress(current_path: str = ""):
         """报告进度"""
-        if params.progress_callback:
+        nonlocal last_progress_report
+        if params.progress_callback and scanned_count - last_progress_report >= progress_interval:
             params.progress_callback(scanned_count, matched_count, current_path)
+            last_progress_report = scanned_count
     
     def process_archive_batch() -> Iterator[FileInfo]:
         """处理一批压缩包"""
@@ -393,136 +400,105 @@ def walk(
         
         archive_batch.clear()
     
-    def report(file_info: Optional[FileInfo], error: Optional[Exception]) -> None:
-        """处理 fs_walk 返回的文件或错误"""
-        nonlocal scanned_count
-        
-        if error:
-            if params.error_handler:
-                params.error_handler(str(error))
-        elif file_info:
-            scanned_count += 1
+    # 使用队列实现非递归遍历（深度优先，减少内存）
+    stack: List[str] = [root]
     
-    # 流式遍历文件系统
-    # 使用队列实现非递归遍历
-    queue: deque[Tuple[str, str]] = deque()
-    queue.append((root, root))
+    # 预编译过滤器测试函数
+    filter_test = params.filter_expr.test
     
-    while queue:
-        path, virt_path = queue.popleft()
+    while stack:
+        current_dir = stack.pop()
         
         try:
-            with os.scandir(path) as entries:
-                sorted_entries = sorted(entries, key=lambda e: e.name)
+            # 使用 scandir 获取目录条目
+            with os.scandir(current_dir) as entries:
+                # 收集子目录（后处理，实现深度优先）
+                subdirs: List[str] = []
                 
-                for entry in sorted_entries:
+                for entry in entries:
+                    scanned_count += 1
+                    
                     try:
-                        child_virt_path = os.path.join(virt_path, entry.name)
-                        scanned_count += 1
+                        # 快速判断类型（不需要额外 stat 调用）
+                        is_dir = entry.is_dir(follow_symlinks=params.follow_symlinks)
                         
-                        # 定期报告进度
-                        if scanned_count % 500 == 0:
-                            report_progress(child_virt_path)
+                        if is_dir:
+                            # 目录：加入待处理栈
+                            subdirs.append(entry.path)
+                            continue
                         
                         # 获取文件状态
                         try:
                             stat_info = entry.stat(follow_symlinks=params.follow_symlinks)
-                        except OSError as e:
-                            if params.error_handler:
-                                params.error_handler(f"{entry.path}: {e}")
+                        except OSError:
                             continue
-                        
-                        # 确定文件类型
-                        if entry.is_symlink():
-                            file_type = "link"
-                        elif entry.is_dir(follow_symlinks=params.follow_symlinks):
-                            file_type = "dir"
-                        else:
-                            file_type = "file"
                         
                         # 创建 FileInfo
                         file_info = FileInfo(
                             name=entry.name,
-                            path=child_virt_path,
+                            path=entry.path,
                             mod_time=datetime.fromtimestamp(stat_info.st_mtime),
                             size=stat_info.st_size,
-                            file_type=file_type,
+                            file_type="link" if entry.is_symlink() else "file",
                         )
-                        
-                        # 如果是目录，加入队列
-                        if file_type == "dir":
-                            queue.append((entry.path, child_virt_path))
-                            continue
                         
                         # archives_only 模式
                         if params.archives_only:
-                            if is_archive(file_info.path):
+                            if is_archive(entry.path):
                                 try:
-                                    matches, error = params.filter_expr.test(file_info.context())
-                                    if error:
-                                        if params.error_handler:
-                                            params.error_handler(str(error))
-                                    elif matches:
+                                    matches, error = filter_test(file_info.context())
+                                    if not error and matches:
                                         matched_count += 1
                                         yield file_info
-                                except Exception as e:
-                                    if params.error_handler:
-                                        params.error_handler(f"{file_info.path}: {e}")
+                                except Exception:
+                                    pass
                             continue
                         
-                        # 普通文件：立即测试并返回
-                        if not is_archive(file_info.path):
-                            try:
-                                matches, error = params.filter_expr.test(file_info.context())
-                                if error:
-                                    if params.error_handler:
-                                        params.error_handler(str(error))
-                                elif matches:
-                                    matched_count += 1
-                                    yield file_info
-                            except Exception as e:
-                                if params.error_handler:
-                                    params.error_handler(f"{file_info.path}: {e}")
-                        else:
-                            # 压缩包：先测试文件本身
-                            try:
-                                matches, error = params.filter_expr.test(file_info.context())
-                                if error:
-                                    if params.error_handler:
-                                        params.error_handler(str(error))
-                                elif matches:
-                                    matched_count += 1
-                                    yield file_info
-                            except Exception as e:
-                                if params.error_handler:
-                                    params.error_handler(f"{file_info.path}: {e}")
+                        # 检查是否是压缩包
+                        is_arch = is_archive(entry.name)
+                        
+                        # 测试文件是否匹配过滤器
+                        try:
+                            matches, error = filter_test(file_info.context())
+                            if not error and matches:
+                                matched_count += 1
+                                yield file_info
+                        except Exception:
+                            pass
+                        
+                        # 如果是压缩包且需要搜索内部
+                        if is_arch and not params.no_archive:
+                            archive_batch.append(file_info)
                             
-                            # 如果需要搜索压缩包内部
-                            if not params.no_archive:
-                                archive_batch.append(file_info)
+                            # 批量处理压缩包
+                            if len(archive_batch) >= batch_size:
+                                yield from process_archive_batch()
                                 
-                                # 批量处理压缩包
-                                if len(archive_batch) >= batch_size:
-                                    yield from process_archive_batch()
-                                    report_progress(child_virt_path)
-                                    
                     except Exception as e:
                         if params.error_handler:
-                            params.error_handler(f"{entry.path if hasattr(entry, 'path') else path}: {e}")
+                            params.error_handler(f"{entry.path}: {e}")
+                
+                # 将子目录加入栈（逆序以保持字母顺序遍历）
+                subdirs.sort(reverse=True)
+                stack.extend(subdirs)
+                
+                # 报告进度
+                report_progress(current_dir)
                         
-        except PermissionError as e:
+        except PermissionError:
             if params.error_handler:
-                params.error_handler(f"权限拒绝: {path}")
+                params.error_handler(f"权限拒绝: {current_dir}")
         except Exception as e:
             if params.error_handler:
-                params.error_handler(f"{path}: {e}")
+                params.error_handler(f"{current_dir}: {e}")
     
     # 处理剩余的压缩包
     if archive_batch and not params.archives_only:
         yield from process_archive_batch()
     
     # 最终进度报告
-    report_progress("完成")
+    if params.progress_callback:
+        params.progress_callback(scanned_count, matched_count, "完成")
     
     # 保存缓存
     if params.use_cache:
