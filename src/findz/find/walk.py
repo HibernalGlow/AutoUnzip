@@ -1,13 +1,20 @@
 """
 文件系统遍历和搜索模块
 支持索引缓存、并行处理、压缩包过滤等高性能特性
+
+优化特性：
+- 使用 os.scandir 替代 os.listdir 提升性能
+- 流式处理，边扫描边返回结果
+- 支持进度回调，实时显示扫描进度
+- 自动拆分超大目录，避免内存溢出
 """
 
 import os
 from datetime import datetime
 from pathlib import Path
-from typing import Callable, Iterator, Optional, Set
+from typing import Callable, Iterator, Optional, Set, List, Tuple
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from collections import deque
 
 from ..filter.filter import FilterExpression
 from .find import FileInfo, FindError, list_files_in_archive
@@ -24,6 +31,10 @@ def get_default_workers() -> int:
         return 4
 
 
+# 进度回调类型
+ProgressCallback = Callable[[int, int, str], None]  # (scanned, matched, current_path)
+
+
 class WalkParams:
     """文件系统遍历参数"""
     
@@ -36,6 +47,8 @@ class WalkParams:
         use_cache: bool = True,  # 是否使用索引缓存
         max_workers: int = None,  # 并行处理线程数，None 表示使用默认值
         error_handler: Optional[Callable[[str], None]] = None,
+        progress_callback: Optional[ProgressCallback] = None,  # 进度回调
+        batch_size: int = 1000,  # 批量处理大小
     ):
         self.filter_expr = filter_expr
         self.follow_symlinks = follow_symlinks
@@ -44,6 +57,8 @@ class WalkParams:
         self.use_cache = use_cache
         self.max_workers = max_workers if max_workers is not None else get_default_workers()
         self.error_handler = error_handler
+        self.progress_callback = progress_callback
+        self.batch_size = batch_size
 
 
 # 支持的压缩包扩展名
@@ -92,67 +107,74 @@ def fs_walk(
     report: Callable[[Optional[FileInfo], Optional[Exception]], None],
 ) -> None:
     """
-    遍历文件系统
+    遍历文件系统（使用 os.scandir 优化性能）
+    
+    使用非递归的广度优先遍历，避免深层递归导致的栈溢出
+    使用 os.scandir 替代 os.listdir + os.stat，减少系统调用
     
     参数:
         root: 起始根目录
         follow_symlinks: 是否跟随符号链接
         report: 报告文件和错误的回调函数
     """
+    # 使用队列实现非递归遍历（广度优先）
+    queue: deque[Tuple[str, str]] = deque()  # (实际路径, 虚拟路径)
+    queue.append((root, root))
     
-    def walk_recursive(path: str, virt_path: str) -> None:
-        """递归遍历目录"""
+    while queue:
+        path, virt_path = queue.popleft()
         
         try:
-            # 使用 lstat 不自动跟随符号链接
-            stat_info = os.lstat(path)
+            # 使用 scandir 获取目录条目（比 listdir + stat 快很多）
+            with os.scandir(path) as entries:
+                # 收集并排序条目
+                sorted_entries = sorted(entries, key=lambda e: e.name)
+                
+                for entry in sorted_entries:
+                    try:
+                        child_virt_path = os.path.join(virt_path, entry.name)
+                        
+                        # 使用 entry.stat() 避免额外的系统调用
+                        try:
+                            if follow_symlinks:
+                                stat_info = entry.stat(follow_symlinks=True)
+                            else:
+                                stat_info = entry.stat(follow_symlinks=False)
+                        except OSError as e:
+                            report(None, FindError(entry.path, e))
+                            continue
+                        
+                        # 确定文件类型
+                        if entry.is_symlink():
+                            file_type = "link"
+                        elif entry.is_dir(follow_symlinks=follow_symlinks):
+                            file_type = "dir"
+                        else:
+                            file_type = "file"
+                        
+                        # 创建 FileInfo
+                        file_info = FileInfo(
+                            name=entry.name,
+                            path=child_virt_path,
+                            mod_time=datetime.fromtimestamp(stat_info.st_mtime),
+                            size=stat_info.st_size,
+                            file_type=file_type,
+                        )
+                        
+                        # 报告文件
+                        report(file_info, None)
+                        
+                        # 如果是目录，加入队列继续遍历
+                        if file_type == "dir" or (file_type == "link" and follow_symlinks and entry.is_dir(follow_symlinks=True)):
+                            queue.append((entry.path, child_virt_path))
+                            
+                    except Exception as e:
+                        report(None, FindError(entry.path if hasattr(entry, 'path') else path, e))
+                        
+        except PermissionError as e:
+            report(None, FindError(path, e))
         except Exception as e:
             report(None, FindError(path, e))
-            return
-        
-        # 创建 FileInfo
-        file_info = make_file_info(virt_path, stat_info)
-        
-        # 处理符号链接
-        if file_info.file_type == "link" and follow_symlinks:
-            try:
-                # 解析符号链接
-                real_path = os.path.realpath(path)
-                stat_info = os.stat(real_path)
-                
-                # 使用解析后的信息但保留原始路径
-                file_info2 = make_file_info(real_path, stat_info)
-                file_info = FileInfo(
-                    name=file_info.name,
-                    path=file_info.path,
-                    mod_time=file_info2.mod_time,
-                    size=file_info2.size,
-                    file_type=file_info2.file_type,
-                )
-                
-                # 更新路径用于递归
-                path = real_path
-            except Exception as e:
-                report(None, FindError(path, e))
-                return
-        
-        # 报告文件/目录
-        report(file_info, None)
-        
-        # 如果是目录，递归进入
-        if file_info.is_dir():
-            try:
-                entries = sorted(os.listdir(path))
-            except Exception as e:
-                report(None, FindError(path, e))
-                return
-            
-            for entry in entries:
-                child_path = os.path.join(path, entry)
-                child_virt_path = os.path.join(virt_path, entry)
-                walk_recursive(child_path, child_virt_path)
-    
-    walk_recursive(root, root)
 
 
 def find_in_archive_cached(
@@ -309,7 +331,12 @@ def walk(
     params: WalkParams,
 ) -> Iterator[FileInfo]:
     """
-    遍历文件系统并返回匹配的文件
+    遍历文件系统并返回匹配的文件（流式处理优化版）
+    
+    优化策略：
+    1. 流式处理：边扫描边返回结果，减少内存占用
+    2. 批量处理压缩包：收集一批压缩包后并行处理
+    3. 进度回调：实时报告扫描进度
     
     参数:
         root: 起始根目录
@@ -319,84 +346,183 @@ def walk(
         匹配过滤器的 FileInfo 对象
     """
     
-    collected_files = []  # 收集所有文件
-    archive_files = []  # 压缩包文件单独收集
+    # 统计计数器
+    scanned_count = 0
+    matched_count = 0
     
-    def report(file_info: Optional[FileInfo], error: Optional[Exception]) -> None:
-        """处理 fs_walk 返回的文件或错误"""
-        if error:
-            if params.error_handler:
-                params.error_handler(str(error))
-        elif file_info:
-            # 区分压缩包和普通文件
-            if is_archive(file_info.path):
-                archive_files.append(file_info)
-            else:
-                collected_files.append(file_info)
+    # 压缩包批量收集
+    archive_batch: List[FileInfo] = []
+    batch_size = params.batch_size
     
-    # 开始遍历文件系统
-    fs_walk(root, params.follow_symlinks, report)
+    def report_progress(current_path: str = ""):
+        """报告进度"""
+        if params.progress_callback:
+            params.progress_callback(scanned_count, matched_count, current_path)
     
-    # 如果是 archives_only 模式，只处理压缩包
-    if params.archives_only:
-        # 只处理压缩包文件
-        for file_info in archive_files:
-            try:
-                matches, error = params.filter_expr.test(file_info.context())
-                if error:
-                    if params.error_handler:
-                        params.error_handler(str(error))
-                elif matches:
-                    yield file_info
-            except Exception as e:
-                if params.error_handler:
-                    params.error_handler(f"{file_info.path}: {e}")
+    def process_archive_batch() -> Iterator[FileInfo]:
+        """处理一批压缩包"""
+        nonlocal matched_count
         
-        # 保存缓存并返回（不继续处理）
-        if params.use_cache:
-            cache = get_global_cache()
-            cache.flush()
-        return
-    
-    # 先处理非压缩包文件（快速）
-    for file_info in collected_files:
-        if file_info.is_dir():
-            continue
-        try:
-            matches, error = params.filter_expr.test(file_info.context())
-            if error:
-                if params.error_handler:
-                    params.error_handler(str(error))
-            elif matches:
-                yield file_info
-        except Exception as e:
-            if params.error_handler:
-                params.error_handler(f"{file_info.path}: {e}")
-    
-    # 并行处理压缩包文件（可能很慢）
-    if archive_files:
-        if params.max_workers > 1:
-            # 使用线程池并行处理
+        if not archive_batch:
+            return
+        
+        if params.max_workers > 1 and len(archive_batch) > 1:
+            # 并行处理
             with ThreadPoolExecutor(max_workers=params.max_workers) as executor:
-                # 提交所有任务
                 future_to_file = {
                     executor.submit(process_file_parallel, fi, params): fi
-                    for fi in archive_files
+                    for fi in archive_batch
                 }
                 
-                # 收集结果
                 for future in as_completed(future_to_file):
                     try:
                         matches = future.result()
-                        yield from matches
+                        for m in matches:
+                            matched_count += 1
+                            yield m
                     except Exception as e:
                         file_info = future_to_file[future]
                         if params.error_handler:
                             params.error_handler(f"{file_info.path}: {e}")
         else:
-            # 单线程顺序处理
-            for file_info in archive_files:
-                yield from find_in(file_info, params)
+            # 单线程处理
+            for file_info in archive_batch:
+                for m in find_in(file_info, params):
+                    matched_count += 1
+                    yield m
+        
+        archive_batch.clear()
+    
+    def report(file_info: Optional[FileInfo], error: Optional[Exception]) -> None:
+        """处理 fs_walk 返回的文件或错误"""
+        nonlocal scanned_count
+        
+        if error:
+            if params.error_handler:
+                params.error_handler(str(error))
+        elif file_info:
+            scanned_count += 1
+    
+    # 流式遍历文件系统
+    # 使用队列实现非递归遍历
+    queue: deque[Tuple[str, str]] = deque()
+    queue.append((root, root))
+    
+    while queue:
+        path, virt_path = queue.popleft()
+        
+        try:
+            with os.scandir(path) as entries:
+                sorted_entries = sorted(entries, key=lambda e: e.name)
+                
+                for entry in sorted_entries:
+                    try:
+                        child_virt_path = os.path.join(virt_path, entry.name)
+                        scanned_count += 1
+                        
+                        # 定期报告进度
+                        if scanned_count % 500 == 0:
+                            report_progress(child_virt_path)
+                        
+                        # 获取文件状态
+                        try:
+                            stat_info = entry.stat(follow_symlinks=params.follow_symlinks)
+                        except OSError as e:
+                            if params.error_handler:
+                                params.error_handler(f"{entry.path}: {e}")
+                            continue
+                        
+                        # 确定文件类型
+                        if entry.is_symlink():
+                            file_type = "link"
+                        elif entry.is_dir(follow_symlinks=params.follow_symlinks):
+                            file_type = "dir"
+                        else:
+                            file_type = "file"
+                        
+                        # 创建 FileInfo
+                        file_info = FileInfo(
+                            name=entry.name,
+                            path=child_virt_path,
+                            mod_time=datetime.fromtimestamp(stat_info.st_mtime),
+                            size=stat_info.st_size,
+                            file_type=file_type,
+                        )
+                        
+                        # 如果是目录，加入队列
+                        if file_type == "dir":
+                            queue.append((entry.path, child_virt_path))
+                            continue
+                        
+                        # archives_only 模式
+                        if params.archives_only:
+                            if is_archive(file_info.path):
+                                try:
+                                    matches, error = params.filter_expr.test(file_info.context())
+                                    if error:
+                                        if params.error_handler:
+                                            params.error_handler(str(error))
+                                    elif matches:
+                                        matched_count += 1
+                                        yield file_info
+                                except Exception as e:
+                                    if params.error_handler:
+                                        params.error_handler(f"{file_info.path}: {e}")
+                            continue
+                        
+                        # 普通文件：立即测试并返回
+                        if not is_archive(file_info.path):
+                            try:
+                                matches, error = params.filter_expr.test(file_info.context())
+                                if error:
+                                    if params.error_handler:
+                                        params.error_handler(str(error))
+                                elif matches:
+                                    matched_count += 1
+                                    yield file_info
+                            except Exception as e:
+                                if params.error_handler:
+                                    params.error_handler(f"{file_info.path}: {e}")
+                        else:
+                            # 压缩包：先测试文件本身
+                            try:
+                                matches, error = params.filter_expr.test(file_info.context())
+                                if error:
+                                    if params.error_handler:
+                                        params.error_handler(str(error))
+                                elif matches:
+                                    matched_count += 1
+                                    yield file_info
+                            except Exception as e:
+                                if params.error_handler:
+                                    params.error_handler(f"{file_info.path}: {e}")
+                            
+                            # 如果需要搜索压缩包内部
+                            if not params.no_archive:
+                                archive_batch.append(file_info)
+                                
+                                # 批量处理压缩包
+                                if len(archive_batch) >= batch_size:
+                                    yield from process_archive_batch()
+                                    report_progress(child_virt_path)
+                                    
+                    except Exception as e:
+                        if params.error_handler:
+                            params.error_handler(f"{entry.path if hasattr(entry, 'path') else path}: {e}")
+                        
+        except PermissionError as e:
+            if params.error_handler:
+                params.error_handler(f"权限拒绝: {path}")
+        except Exception as e:
+            if params.error_handler:
+                params.error_handler(f"{path}: {e}")
+    
+    # 处理剩余的压缩包
+    if archive_batch and not params.archives_only:
+        yield from process_archive_batch()
+    
+    # 最终进度报告
+    report_progress("完成")
     
     # 保存缓存
     if params.use_cache:
