@@ -1,11 +1,23 @@
+"""
+bandia - 批量解压工具
+使用 Bandizip (bz.exe) 进行批量解压
+
+功能：
+- 支持剪贴板/参数/交互式输入
+- 支持解压后删除源文件（可选移入回收站）
+- 支持进度回调（用于 GUI/WebSocket 集成）
+- 支持 .zip .7z .rar .tar .gz .bz2 .xz 格式
+"""
+
 import os
 import re
 import shutil
 import subprocess
 import sys
 import time
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Iterable, List
+from typing import Callable, Iterable, List, Optional
 
 import pyperclip
 from send2trash import send2trash
@@ -18,28 +30,93 @@ from rich.table import Table
 console = Console()
 
 BZ_EXECUTABLE_NAMES = ["bz.exe", "bandizip", "Bandizip", "BZ.exe"]
+ARCHIVE_EXTENSIONS = {'.zip', '.7z', '.rar', '.tar', '.gz', '.bz2', '.xz'}
+QUOTE_CHARS = '"""\'\''''
+ARCHIVE_EXT_RE = re.compile(r"\.(zip|7z|rar|tar|gz|bz2|xz)$", re.IGNORECASE)
+
+
+# ============ 数据类 ============
+
+@dataclass
+class ExtractResult:
+    """单个文件解压结果"""
+    path: Path
+    success: bool
+    duration: float = 0.0
+    error: str = ""
+
+
+@dataclass
+class BatchResult:
+    """批量解压结果"""
+    success: bool
+    message: str
+    extracted: int = 0
+    failed: int = 0
+    total: int = 0
+    results: List[ExtractResult] = field(default_factory=list)
+
+
+# ============ 进度回调类 ============
+
+class ProgressCallback:
+    """
+    进度回调封装
+    支持节流以减少回调频率，适用于 WebSocket 等场景
+    """
+    
+    def __init__(
+        self,
+        on_progress: Optional[Callable[[int, str, str], None]] = None,
+        on_log: Optional[Callable[[str], None]] = None,
+        throttle_interval: float = 0.0  # 0 表示不节流
+    ):
+        """
+        Args:
+            on_progress: 进度回调 (progress: 0-100, message: str, current_file: str)
+            on_log: 日志回调 (message: str)
+            throttle_interval: 节流间隔（秒），0 表示不节流
+        """
+        self.on_progress = on_progress
+        self.on_log = on_log
+        self.throttle_interval = throttle_interval
+        self._last_progress_time = 0.0
+        self._last_progress_value = -1
+    
+    def progress(self, value: int, message: str, current_file: str = ""):
+        """发送进度（带可选节流）"""
+        if not self.on_progress:
+            return
+        
+        now = time.time()
+        should_send = (
+            self.throttle_interval <= 0 or
+            value == 0 or 
+            value == 100 or
+            value - self._last_progress_value >= 5 or
+            now - self._last_progress_time >= self.throttle_interval
+        )
+        
+        if should_send:
+            self.on_progress(value, message, current_file)
+            self._last_progress_time = now
+            self._last_progress_value = value
+    
+    def log(self, message: str):
+        """发送日志"""
+        if self.on_log:
+            self.on_log(message)
+
+
+# ============ 日志配置 ============
 
 def setup_logger(app_name="app", project_root=None, console_output=True):
-    """配置 Loguru 日志系统
-    
-    Args:
-        app_name: 应用名称，用于日志目录
-        project_root: 项目根目录，默认为当前文件所在目录
-        console_output: 是否输出到控制台，默认为True
-        
-    Returns:
-        tuple: (logger, config_info)
-            - logger: 配置好的 logger 实例
-            - config_info: 包含日志配置信息的字典
-    """
-    # 获取项目根目录
+    """配置 Loguru 日志系统"""
     if project_root is None:
         project_root = Path(__file__).parent.resolve()
     
-    # 清除默认处理器
     logger.remove()
     
-    # 有条件地添加控制台处理器（简洁版格式）
     if console_output:
         logger.add(
             sys.stdout,
@@ -47,18 +124,15 @@ def setup_logger(app_name="app", project_root=None, console_output=True):
             format="<green>{time:YYYY-MM-DD HH:mm:ss}</green> | <blue>{elapsed}</blue> | <level>{level.icon} {level: <8}</level> | <cyan>{name}:{function}:{line}</cyan> - <level>{message}</level>"
         )
     
-    # 使用 datetime 构建日志路径
     current_time = datetime.now()
     date_str = current_time.strftime("%Y-%m-%d")
     hour_str = current_time.strftime("%H")
     minute_str = current_time.strftime("%M%S")
     
-    # 构建日志目录和文件路径
     log_dir = os.path.join(project_root, "logs", app_name, date_str, hour_str)
     os.makedirs(log_dir, exist_ok=True)
     log_file = os.path.join(log_dir, f"{minute_str}.log")
     
-    # 添加文件处理器
     logger.add(
         log_file,
         level="DEBUG",
@@ -67,28 +141,22 @@ def setup_logger(app_name="app", project_root=None, console_output=True):
         compression="zip",
         encoding="utf-8",
         format="{time:YYYY-MM-DD HH:mm:ss} | {elapsed} | {level.icon} {level: <8} | {name}:{function}:{line} - {message}",
-        enqueue=True,     )
+        enqueue=True,
+    )
     
-    # 创建配置信息字典
-    config_info = {
-        'log_file': log_file,
-    }
-    
+    config_info = {'log_file': log_file}
     logger.info(f"日志系统已初始化，应用名称: {app_name}")
     return logger, config_info
+
 
 # 初始化模块级 logger
 logger, config_info = setup_logger(app_name="bandia", console_output=True)
 
 
-def find_bz_executable(candidate_dirs: Iterable[Path] | None = None) -> Path | None:
-    """尝试自动定位 bz.exe。
+# ============ 工具函数 ============
 
-    1. 环境变量 BANDIZIP_PATH 指定的路径。
-    2. 传入的 candidate_dirs。
-    3. PATH 中可执行。
-    4. 常见安装目录。
-    """
+def find_bz_executable(candidate_dirs: Iterable[Path] | None = None) -> Path | None:
+    """尝试自动定位 bz.exe"""
     env = os.getenv("BANDIZIP_PATH")
     if env:
         p = Path(env)
@@ -106,13 +174,11 @@ def find_bz_executable(candidate_dirs: Iterable[Path] | None = None) -> Path | N
                 if cand.is_file():
                     return cand
 
-    # PATH
     for name in BZ_EXECUTABLE_NAMES:
-        path = shutil.which(name) if 'shutil' in globals() else None  # 延迟导入避免不必要覆盖
+        path = shutil.which(name)
         if path:
             return Path(path)
 
-    # 常见安装目录
     common_dirs = [
         Path("C:/Program Files/Bandizip"),
         Path("C:/Program Files (x86)/Bandizip"),
@@ -126,13 +192,9 @@ def find_bz_executable(candidate_dirs: Iterable[Path] | None = None) -> Path | N
     return None
 
 
-QUOTE_CHARS = '"“”\'\'‘’'
-ARCHIVE_EXT_RE = re.compile(r"\.(zip|7z|rar|tar|gz|bz2|xz)$", re.IGNORECASE)
-
-
 def _strip_outer_quotes(s: str) -> str:
+    """去除字符串两端的引号"""
     s = s.strip()
-    # 去除成对或不成对的前后引号
     while len(s) >= 2 and s[0] in QUOTE_CHARS and s[-1] in QUOTE_CHARS:
         s = s[1:-1].strip()
     if s and s[0] in QUOTE_CHARS:
@@ -143,156 +205,244 @@ def _strip_outer_quotes(s: str) -> str:
 
 
 def parse_text_paths(text: str) -> List[Path]:
-    """从文本解析潜在路径。更宽松：
-    - 按行
-    - 去除各种引号
-    - 若整行非路径但含有含扩展名的片段，尝试提取最后一个带压缩扩展的片段
-    """
+    """从文本解析压缩包路径"""
     raw_lines = text.replace("\r", "\n").split("\n")
     lines = [l for l in (rl.strip() for rl in raw_lines) if l]
     results: List[Path] = []
+    
     for line in lines:
         cleaned = _strip_outer_quotes(line)
         if not ARCHIVE_EXT_RE.search(cleaned):
-            # 尝试在行中寻找带扩展的子串
             m = ARCHIVE_EXT_RE.search(line)
             if m:
-                # 回溯到空白或引号边界
                 end = m.end()
                 start = line.rfind(' ', 0, end) + 1
                 cand = line[start:end]
                 cleaned = _strip_outer_quotes(cand)
-        # 再次检查
+        
         if not ARCHIVE_EXT_RE.search(cleaned):
             logger.debug(f"忽略非压缩路径行: {line}")
             continue
-        p = Path(cleaned)
-        results.append(p)
-    # 去重，保持顺序
+        results.append(Path(cleaned))
+    
+    # 去重保序
     seen = set()
-    uniq: List[Path] = []
-    for p in results:
-        if p not in seen:
-            seen.add(p)
-            uniq.append(p)
-    logger.debug("解析得到路径:" + ("\n" + "\n".join(str(p) for p in uniq) if uniq else " <空>"))
-    return uniq
+    return [p for p in results if not (p in seen or seen.add(p))]
 
 
-def run_once(paths: List[Path], bz_path: Path, sleep_after: float = 0.0, delete: bool = True, use_trash: bool = True, overwrite_mode: str = "overwrite"):
-    """执行解压操作
+def filter_archives(paths: List[Path]) -> List[Path]:
+    """过滤出有效的压缩包路径"""
+    return [p for p in paths if p.suffix.lower() in ARCHIVE_EXTENSIONS]
+
+
+# ============ 核心解压函数 ============
+
+def extract_single(
+    archive: Path,
+    bz_path: Path,
+    delete: bool = True,
+    use_trash: bool = True,
+    overwrite_mode: str = "overwrite"
+) -> ExtractResult:
+    """
+    解压单个压缩包
     
     Args:
-        overwrite_mode: 文件冲突处理模式
-            - "overwrite": 覆盖已存在文件 (-aoa)
-            - "skip": 跳过已存在文件 (-aos)
-            - "rename": 自动重命名 (-aou)
+        archive: 压缩包路径
+        bz_path: Bandizip 可执行文件路径
+        delete: 解压成功后是否删除源文件
+        use_trash: 是否使用回收站
+        overwrite_mode: 冲突处理模式 ("overwrite", "skip", "rename")
+    
+    Returns:
+        ExtractResult: 解压结果
     """
-    # 根据模式选择 bz 参数
-    mode_flags = {
-        "overwrite": "-aoa",
-        "skip": "-aos",
-        "rename": "-aou",
-    }
+    if not archive.exists():
+        return ExtractResult(archive, False, error="文件不存在")
+    
+    if archive.is_dir():
+        return ExtractResult(archive, False, error="是目录")
+    
+    mode_flags = {"overwrite": "-aoa", "skip": "-aos", "rename": "-aou"}
     conflict_flag = mode_flags.get(overwrite_mode, "-aoa")
     
-    for p in paths:
-        if not p.exists():
-            logger.error(f"不存在: {p}")
-            continue
-        if p.is_dir():
-            logger.warning(f"跳过目录: {p}")
-            continue
-        logger.info(f"解压: {p}")
-        cmd = [str(bz_path), "x", "-y", conflict_flag, "-target:auto", str(p)]
-        start = time.time()
+    cmd = [str(bz_path), "x", "-y", conflict_flag, "-target:auto", str(archive)]
+    start_time = time.time()
+    
+    try:
+        proc = subprocess.run(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+        )
+    except Exception as e:
+        return ExtractResult(archive, False, error=str(e))
+    
+    duration = time.time() - start_time
+    
+    if proc.returncode != 0:
+        error_msg = proc.stderr or proc.stdout or f"返回码 {proc.returncode}"
+        return ExtractResult(archive, False, duration, error_msg[:200])
+    
+    # 解压成功，处理删除
+    if delete:
         try:
-            logger.debug("执行命令: " + " ".join(cmd))
-            # 隐藏原生命令行输出：捕获 stdout/stderr，失败时再显示
-            # 指定 encoding 与 errors，避免在含有非本地编码字节时触发 UnicodeDecodeError
-            proc = subprocess.run(
-                cmd,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-            )
-        except Exception as e:  # noqa
-            logger.exception(f"执行失败 {p}: {e}")
-            continue
-        duration = time.time() - start
-        ok = proc.returncode == 0
-        if ok:
-            logger.success(f"成功 ({duration:.2f}s): {p}")
-            if delete:
-                try:
-                    if use_trash:
-                        send2trash(str(p))
-                        logger.info(f"已移入回收站: {p}")
-                    else:
-                        p.unlink()
-                        logger.info(f"已删除: {p}")
-                except Exception as e:  # noqa
-                    logger.error(f"删除失败 {p}: {e}")
+            if use_trash:
+                send2trash(str(archive))
+            else:
+                archive.unlink()
+        except Exception as e:
+            logger.warning(f"删除失败 {archive.name}: {e}")
+    
+    return ExtractResult(archive, True, duration)
+
+
+def extract_batch(
+    paths: List[Path],
+    delete: bool = True,
+    use_trash: bool = True,
+    overwrite_mode: str = "overwrite",
+    callback: Optional[ProgressCallback] = None
+) -> BatchResult:
+    """
+    批量解压压缩包
+    
+    Args:
+        paths: 压缩包路径列表
+        delete: 解压成功后是否删除源文件
+        use_trash: 是否使用回收站
+        overwrite_mode: 冲突处理模式
+        callback: 进度回调（可选）
+    
+    Returns:
+        BatchResult: 批量解压结果
+    """
+    # 查找 Bandizip
+    bz_path = find_bz_executable()
+    if not bz_path:
+        return BatchResult(
+            success=False,
+            message="未找到 Bandizip (bz.exe)，请安装或设置环境变量 BANDIZIP_PATH"
+        )
+    
+    if callback:
+        callback.log(f"使用 Bandizip: {bz_path}")
+    
+    # 过滤有效路径
+    paths = filter_archives(paths)
+    if not paths:
+        return BatchResult(success=False, message="没有有效的压缩包路径")
+    
+    total = len(paths)
+    if callback:
+        callback.log(f"开始解压 {total} 个压缩包...")
+        callback.progress(0, f"准备解压 {total} 个文件")
+    
+    results: List[ExtractResult] = []
+    extracted = 0
+    failed = 0
+    
+    for idx, archive in enumerate(paths):
+        # 计算进度 (5% - 95%)
+        progress_pct = int(5 + (idx / total) * 90)
+        
+        if callback:
+            callback.progress(progress_pct, f"解压 {idx + 1}/{total}", archive.name)
+        
+        # 执行解压
+        result = extract_single(archive, bz_path, delete, use_trash, overwrite_mode)
+        results.append(result)
+        
+        if result.success:
+            extracted += 1
+            if callback:
+                callback.log(f"✅ 成功 ({result.duration:.2f}s): {archive.name}")
+            logger.success(f"成功 ({result.duration:.2f}s): {archive}")
         else:
-            logger.error(f"失败 rc={proc.returncode}: {p}\nSTDOUT:\n{proc.stdout}\nSTDERR:\n{proc.stderr}")
+            failed += 1
+            if callback:
+                callback.log(f"❌ 失败: {archive.name} - {result.error}")
+            logger.error(f"失败: {archive} - {result.error}")
+    
+    if callback:
+        callback.progress(100, "解压完成")
+    
+    success = failed == 0
+    message = f"解压完成: {extracted} 成功, {failed} 失败"
+    
+    if callback:
+        callback.log(f"📊 {message}")
+    
+    return BatchResult(
+        success=success,
+        message=message,
+        extracted=extracted,
+        failed=failed,
+        total=total,
+        results=results
+    )
+
+
+# ============ 兼容旧 API ============
+
+def run_once(paths: List[Path], bz_path: Path, sleep_after: float = 0.0, 
+             delete: bool = True, use_trash: bool = True, overwrite_mode: str = "overwrite"):
+    """执行解压操作（兼容旧 API）"""
+    for p in paths:
+        result = extract_single(p, bz_path, delete, use_trash, overwrite_mode)
+        if result.success:
+            logger.success(f"成功 ({result.duration:.2f}s): {p}")
+            if delete:
+                action = "已移入回收站" if use_trash else "已删除"
+                logger.info(f"{action}: {p}")
+        else:
+            logger.error(f"失败: {p} - {result.error}")
+        
         if sleep_after > 0:
             time.sleep(sleep_after)
 
 
-def filter_archives(paths: List[Path]) -> List[Path]:
-    exts = {'.zip', '.7z', '.rar', '.tar', '.gz', '.bz2', '.xz'}
-    return [p for p in paths if p.suffix.lower() in exts]
-
-
-def run(paths: List[Path], delete: bool = True, use_trash: bool = True, overwrite_mode: str = "overwrite"):
-    """执行一次批量解压。
-    
-    Args:
-        overwrite_mode: 文件冲突处理模式 ("overwrite", "skip", "rename")
-    """
-    bz = find_bz_executable()
-    if not bz:
-        logger.error("未找到 bz.exe，请设置环境变量 BANDIZIP_PATH 或加入 PATH")
+def run(paths: List[Path], delete: bool = True, use_trash: bool = True, 
+        overwrite_mode: str = "overwrite") -> int:
+    """执行批量解压（兼容旧 API）"""
+    result = extract_batch(paths, delete, use_trash, overwrite_mode)
+    if not result.success and result.total == 0:
+        logger.error(result.message)
         return 1
-    logger.info(f"使用 Bandizip: {bz}")
-    if not paths:
-        logger.warning("没有待处理路径")
-        return 0
-    paths = filter_archives(paths)
-    if not paths:
-        logger.warning("未发现支持的压缩格式")
-        return 0
-    run_once(paths, bz, delete=delete, use_trash=use_trash, overwrite_mode=overwrite_mode)
-    return 0
+    return 0 if result.success else 1
 
 
-def main():  # CLI 入口（一次性执行）
+# ============ CLI 入口 ============
+
+def main():
     import argparse
 
     parser = argparse.ArgumentParser(prog="bandia", description="批量解压 (Bandizip) - 剪贴板 / 参数 / 交互")
     parser.add_argument("paths", nargs="*", help="直接提供的压缩包路径 (可多个)")
     parser.add_argument("--clipboard", action="store_true", help="仅使用剪贴板 (覆盖默认)")
     parser.add_argument("--no-clipboard", action="store_true", help="禁用默认的剪贴板尝试")
-    parser.add_argument("--delete", action="store_true", help="成功后删除源压缩包 (物理删除，不进回收站)")
-    parser.add_argument("--trash", action="store_true", help="成功后放入回收站 (默认行为，若同时给出 --delete 优先级更高)")
-    parser.add_argument("--keep", action="store_true", help="保留源压缩包 (覆盖 --delete / --trash)")
+    parser.add_argument("--delete", action="store_true", help="成功后删除源压缩包 (物理删除)")
+    parser.add_argument("--trash", action="store_true", help="成功后放入回收站 (默认)")
+    parser.add_argument("--keep", action="store_true", help="保留源压缩包")
     parser.add_argument("--overwrite", action="store_true", help="覆盖已存在文件 (默认)")
     parser.add_argument("--skip", action="store_true", help="跳过已存在文件")
     parser.add_argument("--rename", action="store_true", help="自动重命名已存在文件")
-    parser.add_argument("--yes", action="store_true", help="非交互模式：不再询问")
+    parser.add_argument("--yes", action="store_true", help="非交互模式")
     parser.add_argument("--debug", action="store_true", help="显示调试日志")
     args = parser.parse_args()
 
     if args.debug:
         logger.enable(__name__)
+    
     collected: List[Path] = []
 
     def add_clipboard():
         try:
             text = pyperclip.paste()
-        except Exception as e:  # noqa
+        except Exception as e:
             logger.error(f"读取剪贴板失败: {e}")
             return
         cps = parse_text_paths(text)
@@ -300,10 +450,9 @@ def main():  # CLI 入口（一次性执行）
             console.print(f"[bold green]剪贴板提取 {len(cps)} 个路径[/bold green]")
         collected.extend(cps)
 
-    # 默认：若未显式提供路径且未禁用，则尝试剪贴板
+    # 默认行为
     if not args.paths and not args.clipboard and not args.no_clipboard:
         add_clipboard()
-        # 默认删除
         default_delete = True
     else:
         default_delete = False
@@ -314,17 +463,10 @@ def main():  # CLI 入口（一次性执行）
     if args.paths:
         collected.extend([Path(p) for p in args.paths])
 
-    # 若仍无 => 交互获取
+    # 交互模式
     if not collected:
         console.print("[yellow]未获取到任何路径，进入交互模式。[/yellow]")
-        # 兼容不同版本 rich：不使用 prompt_suffix，直接把提示写入问题文本
-        choice = Prompt.ask(
-            "来源 (1=手动多行 2=剪贴板)",
-            choices=["1", "2"],
-            default="1",
-            show_choices=False,
-            show_default=True,
-        )
+        choice = Prompt.ask("来源 (1=手动多行 2=剪贴板)", choices=["1", "2"], default="1", show_choices=False, show_default=True)
         if choice == "2":
             add_clipboard()
         else:
@@ -340,17 +482,10 @@ def main():  # CLI 入口（一次性执行）
                 buf_lines.append(line)
             collected.extend(parse_text_paths("\n".join(buf_lines)))
 
-    # 规范化 & 去重
-    norm: List[Path] = []
+    # 规范化去重
     seen = set()
-    for p in collected:
-        p = p.expanduser()
-        if p not in seen:
-            seen.add(p)
-            norm.append(p)
-    collected = norm
+    collected = [p.expanduser() for p in collected if not (p.expanduser() in seen or seen.add(p.expanduser()))]
 
-    # 显示列表
     if collected:
         table = Table(title="待处理压缩包", show_lines=False)
         table.add_column("#", justify="right", style="cyan")
@@ -362,37 +497,31 @@ def main():  # CLI 入口（一次性执行）
         console.print("[red]没有任何可处理路径，退出。[/red]")
         sys.exit(0)
 
-    # 删除策略判定
-    # 删除策略：keep > delete > trash(default maybe) > confirm
+    # 删除策略
     if args.keep:
-        delete = False
-        use_trash = False
+        delete, use_trash = False, False
     elif args.delete:
-        delete = True
-        use_trash = False
+        delete, use_trash = True, False
     elif args.trash or default_delete:
-        # 默认移入回收站
         if args.yes:
-            delete = True
-            use_trash = True
+            delete, use_trash = True, True
         else:
             delete = Confirm.ask("解压成功后移入回收站?", default=True)
             use_trash = delete
     else:
         if args.yes:
-            delete = False
-            use_trash = False
+            delete, use_trash = False, False
         else:
             delete = Confirm.ask("解压成功后删除源压缩包?", default=False)
             use_trash = False
 
-    # 文件冲突处理模式
+    # 冲突处理模式
     if args.skip:
         overwrite_mode = "skip"
     elif args.rename:
         overwrite_mode = "rename"
     else:
-        overwrite_mode = "overwrite"  # 默认覆盖
+        overwrite_mode = "overwrite"
 
     code = run(collected, delete=delete, use_trash=use_trash, overwrite_mode=overwrite_mode)
     sys.exit(code)
