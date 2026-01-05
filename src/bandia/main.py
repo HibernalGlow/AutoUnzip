@@ -136,11 +136,17 @@ def setup_logger(app_name="app", project_root=None, console_output=True):
     logger.remove()
     
     if console_output:
-        logger.add(
-            sys.stdout,
-            level="INFO",
-            format="<green>{time:YYYY-MM-DD HH:mm:ss}</green> | <blue>{elapsed}</blue> | <level>{level.icon} {level: <8}</level> | <cyan>{name}:{function}:{line}</cyan> - <level>{message}</level>"
-        )
+        # 兼容 Windows GBK 控制台，如果无法设置编码则移除图标
+        sink = sys.stdout
+        fmt = "<green>{time:YYYY-MM-DD HH:mm:ss}</green> | <blue>{elapsed}</blue> | <level>{level: <8}</level> | <cyan>{name}:{function}:{line}</cyan> - <level>{message}</level>"
+        try:
+            if hasattr(sys.stdout, "reconfigure"):
+                sys.stdout.reconfigure(encoding='utf-8')
+                fmt = "<green>{time:YYYY-MM-DD HH:mm:ss}</green> | <blue>{elapsed}</blue> | <level>{level.icon} {level: <8}</level> | <cyan>{name}:{function}:{line}</cyan> - <level>{message}</level>"
+        except Exception:
+            pass
+            
+        logger.add(sink, level="INFO", format=fmt)
     
     current_time = datetime.now()
     date_str = current_time.strftime("%Y-%m-%d")
@@ -353,6 +359,9 @@ def extract_batch(
     Returns:
         BatchResult: 批量解压结果
     """
+    # 重置中断标志
+    _shutdown_event.clear()
+    
     # 查找 Bandizip
     bz_path = find_bz_executable()
     if not bz_path:
@@ -457,6 +466,7 @@ def _extract_sequential(
             # 计算进度回调百分比
             if callback:
                 progress_pct = int(5 + (idx / total) * 90)
+                callback.progress(progress_pct, f"STARTED:{idx}", archive.name)
                 callback.progress(progress_pct, f"解压 {idx + 1}/{total}", archive.name)
             
             # 执行解压
@@ -503,14 +513,18 @@ def _extract_parallel(
     # 重置中断标志
     _shutdown_event.clear()
     
-    # 设置信号处理
-    original_handler = signal.getsignal(signal.SIGINT)
+    # 仅在主线程中设置信号处理（避免在后台线程中出错）
+    original_handler = None
+    is_main_thread = threading.current_thread() is threading.main_thread()
     
-    def signal_handler(signum, frame):
-        console.print("\n[yellow]⚠️ 收到中断信号，正在停止...[/yellow]")
-        _shutdown_event.set()
-    
-    signal.signal(signal.SIGINT, signal_handler)
+    if is_main_thread:
+        original_handler = signal.getsignal(signal.SIGINT)
+        
+        def signal_handler(signum, frame):
+            console.print("\n[yellow]⚠️ 收到中断信号，正在停止...[/yellow]")
+            _shutdown_event.set()
+        
+        signal.signal(signal.SIGINT, signal_handler)
     
     console.print(f"[cyan]⚡ 并行解压模式: {workers} 个工作线程[/cyan]")
     
@@ -530,12 +544,16 @@ def _extract_parallel(
             
             with ThreadPoolExecutor(max_workers=workers) as executor:
                 # 提交所有任务
-                futures = {
-                    executor.submit(
+                futures = {}
+                for idx, archive in enumerate(paths):
+                    if callback:
+                        progress_pct = int(5 + (completed / total) * 90)
+                        callback.progress(progress_pct, f"STARTED:{idx}", archive.name)
+                    
+                    future = executor.submit(
                         extract_single, archive, bz_path, delete, use_trash, overwrite_mode
-                    ): archive
-                    for archive in paths
-                }
+                    )
+                    futures[future] = (idx, archive)
                 
                 # 收集结果
                 for future in as_completed(futures):
@@ -546,7 +564,7 @@ def _extract_parallel(
                         progress.console.print("[yellow]已取消剩余任务[/yellow]")
                         break
                     
-                    archive = futures[future]
+                    idx, archive = futures[future]
                     try:
                         result = future.result(timeout=0.1)
                         results.append(result)
@@ -555,7 +573,8 @@ def _extract_parallel(
                         # 计算进度回调百分比
                         if callback:
                             progress_pct = int(5 + (completed / total) * 90)
-                            callback.progress(progress_pct, f"解压 {completed}/{total}", archive.name)
+                            # 发送 FINISHED:idx 消息，并保留原有的进度消息
+                            callback.progress(progress_pct, f"FINISHED:{idx}|解压 {completed}/{total}", archive.name)
                         
                         # 显示单个任务结果
                         display_name = archive.name[:40] + "..." if len(archive.name) > 40 else archive.name
@@ -585,7 +604,8 @@ def _extract_parallel(
                         progress.update(main_task, completed=completed)
     finally:
         # 恢复原始信号处理
-        signal.signal(signal.SIGINT, original_handler)
+        if is_main_thread and original_handler is not None:
+            signal.signal(signal.SIGINT, original_handler)
     
     return results
 
