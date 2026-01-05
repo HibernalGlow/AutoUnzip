@@ -7,6 +7,8 @@ bandia - 批量解压工具
 - 支持解压后删除源文件（可选移入回收站）
 - 支持进度回调（用于 GUI/WebSocket 集成）
 - 支持 .zip .7z .rar .tar .gz .bz2 .xz 格式
+- 支持并行解压提升性能
+- 支持 Ctrl+C 优雅中断
 """
 
 import os
@@ -15,9 +17,12 @@ import shutil
 import subprocess
 import sys
 import time
+import signal
+import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Callable, Iterable, List, Optional
+from typing import Callable, Iterable, List, Optional, Tuple
 
 import pyperclip
 from send2trash import send2trash
@@ -26,12 +31,23 @@ from datetime import datetime
 from rich.console import Console
 from rich.prompt import Confirm, Prompt
 from rich.table import Table
+from rich.progress import (
+    Progress, TextColumn, BarColumn, SpinnerColumn,
+    TimeElapsedColumn, TimeRemainingColumn, TaskProgressColumn
+)
+from rich.panel import Panel
 
 console = Console()
 
+# 并行解压配置
+DEFAULT_PARALLEL_WORKERS = max(2, min(4, (os.cpu_count() or 4) // 2))
+
+# 全局中断标志
+_shutdown_event = threading.Event()
+
 BZ_EXECUTABLE_NAMES = ["bz.exe", "bandizip", "Bandizip", "BZ.exe"]
 ARCHIVE_EXTENSIONS = {'.zip', '.7z', '.rar', '.tar', '.gz', '.bz2', '.xz'}
-QUOTE_CHARS = '"""\'\''''
+QUOTE_CHARS = '"\u201c\u201d\'\u2018\u2019'
 ARCHIVE_EXT_RE = re.compile(r"\.(zip|7z|rar|tar|gz|bz2|xz)$", re.IGNORECASE)
 
 
@@ -43,7 +59,9 @@ class ExtractResult:
     path: Path
     success: bool
     duration: float = 0.0
+    file_size: int = 0  # 压缩包大小 (bytes)
     error: str = ""
+
 
 
 @dataclass
@@ -257,11 +275,21 @@ def extract_single(
     Returns:
         ExtractResult: 解压结果
     """
+    # 检查中断
+    if _shutdown_event.is_set():
+        return ExtractResult(archive, False, error="用户中断")
+    
     if not archive.exists():
         return ExtractResult(archive, False, error="文件不存在")
     
     if archive.is_dir():
         return ExtractResult(archive, False, error="是目录")
+    
+    # 获取文件大小
+    try:
+        file_size = archive.stat().st_size
+    except Exception:
+        file_size = 0
     
     mode_flags = {"overwrite": "-aoa", "skip": "-aos", "rename": "-aou"}
     conflict_flag = mode_flags.get(overwrite_mode, "-aoa")
@@ -285,7 +313,7 @@ def extract_single(
     
     if proc.returncode != 0:
         error_msg = proc.stderr or proc.stdout or f"返回码 {proc.returncode}"
-        return ExtractResult(archive, False, duration, error_msg[:200])
+        return ExtractResult(archive, False, duration, file_size, error_msg[:200])
     
     # 解压成功，处理删除
     if delete:
@@ -297,7 +325,8 @@ def extract_single(
         except Exception as e:
             logger.warning(f"删除失败 {archive.name}: {e}")
     
-    return ExtractResult(archive, True, duration)
+    return ExtractResult(archive, True, duration, file_size)
+
 
 
 def extract_batch(
@@ -305,17 +334,21 @@ def extract_batch(
     delete: bool = True,
     use_trash: bool = True,
     overwrite_mode: str = "overwrite",
-    callback: Optional[ProgressCallback] = None
+    callback: Optional[ProgressCallback] = None,
+    parallel: bool = False,
+    workers: int = None
 ) -> BatchResult:
     """
-    批量解压压缩包
+    批量解压压缩包（支持可视化进度条和并行处理）
     
     Args:
         paths: 压缩包路径列表
         delete: 解压成功后是否删除源文件
         use_trash: 是否使用回收站
         overwrite_mode: 冲突处理模式
-        callback: 进度回调（可选）
+        callback: 进度回调（可选，用于 WebSocket 等场景）
+        parallel: 是否启用并行解压
+        workers: 并行工作线程数（默认自动计算）
     
     Returns:
         BatchResult: 批量解压结果
@@ -337,44 +370,45 @@ def extract_batch(
         return BatchResult(success=False, message="没有有效的压缩包路径")
     
     total = len(paths)
+    
+    # 计算总文件大小（用于显示）
+    total_size = 0
+    for p in paths:
+        try:
+            total_size += p.stat().st_size
+        except Exception:
+            pass
+    
     if callback:
         callback.log(f"开始解压 {total} 个压缩包...")
         callback.progress(0, f"准备解压 {total} 个文件")
     
-    results: List[ExtractResult] = []
-    extracted = 0
-    failed = 0
+    # 根据并行设置选择执行方式
+    if parallel and total > 1:
+        results = _extract_parallel(
+            paths, bz_path, delete, use_trash, overwrite_mode,
+            workers or DEFAULT_PARALLEL_WORKERS, callback
+        )
+    else:
+        results = _extract_sequential(
+            paths, bz_path, delete, use_trash, overwrite_mode, callback
+        )
     
-    for idx, archive in enumerate(paths):
-        # 计算进度 (5% - 95%)
-        progress_pct = int(5 + (idx / total) * 90)
-        
-        if callback:
-            callback.progress(progress_pct, f"解压 {idx + 1}/{total}", archive.name)
-        
-        # 执行解压
-        result = extract_single(archive, bz_path, delete, use_trash, overwrite_mode)
-        results.append(result)
-        
-        if result.success:
-            extracted += 1
-            if callback:
-                callback.log(f"✅ 成功 ({result.duration:.2f}s): {archive.name}")
-            logger.success(f"成功 ({result.duration:.2f}s): {archive}")
-        else:
-            failed += 1
-            if callback:
-                callback.log(f"❌ 失败: {archive.name} - {result.error}")
-            logger.error(f"失败: {archive} - {result.error}")
-    
-    if callback:
-        callback.progress(100, "解压完成")
+    # 统计结果
+    extracted = sum(1 for r in results if r.success)
+    failed = len(results) - extracted
+    total_extracted_size = sum(r.file_size for r in results if r.success)
     
     success = failed == 0
     message = f"解压完成: {extracted} 成功, {failed} 失败"
     
     if callback:
+        callback.progress(100, "解压完成")
         callback.log(f"📊 {message}")
+    
+    # 显示最终摘要
+    console.print(f"\n[green]✓ 完成[/green] {extracted}/{len(results)} | "
+                 f"总计 {total_extracted_size/1024/1024:.1f}MB")
     
     return BatchResult(
         success=success,
@@ -384,6 +418,177 @@ def extract_batch(
         total=total,
         results=results
     )
+
+
+def _extract_sequential(
+    paths: List[Path],
+    bz_path: Path,
+    delete: bool,
+    use_trash: bool,
+    overwrite_mode: str,
+    callback: Optional[ProgressCallback]
+) -> List[ExtractResult]:
+    """串行解压（带 Rich Progress 可视化）"""
+    results: List[ExtractResult] = []
+    total = len(paths)
+    
+    with Progress(
+        SpinnerColumn(),
+        TextColumn("[bold blue]{task.description}"),
+        BarColumn(bar_width=40),
+        TaskProgressColumn(),
+        TextColumn("•"),
+        TimeElapsedColumn(),
+        TextColumn("•"),
+        TimeRemainingColumn(),
+        console=console
+    ) as progress:
+        main_task = progress.add_task(f"[cyan]解压进度: 0/{total}", total=total)
+        
+        for idx, archive in enumerate(paths):
+            # 检查中断
+            if _shutdown_event.is_set():
+                progress.console.print("[yellow]已取消剩余任务[/yellow]")
+                break
+            
+            display_name = archive.name[:40] + "..." if len(archive.name) > 40 else archive.name
+            progress.update(main_task, description=f"[cyan]解压: {display_name}")
+            
+            # 计算进度回调百分比
+            if callback:
+                progress_pct = int(5 + (idx / total) * 90)
+                callback.progress(progress_pct, f"解压 {idx + 1}/{total}", archive.name)
+            
+            # 执行解压
+            result = extract_single(archive, bz_path, delete, use_trash, overwrite_mode)
+            results.append(result)
+            
+            # 显示单个任务结果
+            if result.success:
+                size_mb = result.file_size / 1024 / 1024
+                progress.console.print(
+                    f"  [green]✓[/green] {display_name} | "
+                    f"{size_mb:.1f}MB ({result.duration:.2f}s)"
+                )
+                if callback:
+                    callback.log(f"✅ 成功 ({result.duration:.2f}s): {archive.name}")
+                logger.success(f"成功 ({result.duration:.2f}s): {archive}")
+            else:
+                err_msg = result.error[:50] if result.error else "未知错误"
+                progress.console.print(f"  [red]✗[/red] {display_name} | {err_msg}")
+                if callback:
+                    callback.log(f"❌ 失败: {archive.name} - {result.error}")
+                logger.error(f"失败: {archive} - {result.error}")
+            
+            progress.update(main_task, completed=idx + 1,
+                           description=f"[cyan]解压进度: {idx + 1}/{total}")
+    
+    return results
+
+
+def _extract_parallel(
+    paths: List[Path],
+    bz_path: Path,
+    delete: bool,
+    use_trash: bool,
+    overwrite_mode: str,
+    workers: int,
+    callback: Optional[ProgressCallback]
+) -> List[ExtractResult]:
+    """并行解压（支持 Ctrl+C 中断）"""
+    results: List[ExtractResult] = []
+    total = len(paths)
+    completed = 0
+    
+    # 重置中断标志
+    _shutdown_event.clear()
+    
+    # 设置信号处理
+    original_handler = signal.getsignal(signal.SIGINT)
+    
+    def signal_handler(signum, frame):
+        console.print("\n[yellow]⚠️ 收到中断信号，正在停止...[/yellow]")
+        _shutdown_event.set()
+    
+    signal.signal(signal.SIGINT, signal_handler)
+    
+    console.print(f"[cyan]⚡ 并行解压模式: {workers} 个工作线程[/cyan]")
+    
+    try:
+        with Progress(
+            SpinnerColumn(),
+            TextColumn("[bold blue]{task.description}"),
+            BarColumn(bar_width=40),
+            TaskProgressColumn(),
+            TextColumn("•"),
+            TimeElapsedColumn(),
+            TextColumn("•"),
+            TimeRemainingColumn(),
+            console=console
+        ) as progress:
+            main_task = progress.add_task(f"[cyan]并行解压: 0/{total}", total=total)
+            
+            with ThreadPoolExecutor(max_workers=workers) as executor:
+                # 提交所有任务
+                futures = {
+                    executor.submit(
+                        extract_single, archive, bz_path, delete, use_trash, overwrite_mode
+                    ): archive
+                    for archive in paths
+                }
+                
+                # 收集结果
+                for future in as_completed(futures):
+                    # 检查中断
+                    if _shutdown_event.is_set():
+                        for f in futures:
+                            f.cancel()
+                        progress.console.print("[yellow]已取消剩余任务[/yellow]")
+                        break
+                    
+                    archive = futures[future]
+                    try:
+                        result = future.result(timeout=0.1)
+                        results.append(result)
+                        completed += 1
+                        
+                        # 计算进度回调百分比
+                        if callback:
+                            progress_pct = int(5 + (completed / total) * 90)
+                            callback.progress(progress_pct, f"解压 {completed}/{total}", archive.name)
+                        
+                        # 显示单个任务结果
+                        display_name = archive.name[:40] + "..." if len(archive.name) > 40 else archive.name
+                        if result.success:
+                            size_mb = result.file_size / 1024 / 1024
+                            progress.console.print(
+                                f"  [green]✓[/green] {display_name} | "
+                                f"{size_mb:.1f}MB ({result.duration:.2f}s)"
+                            )
+                            if callback:
+                                callback.log(f"✅ 成功 ({result.duration:.2f}s): {archive.name}")
+                            logger.success(f"成功 ({result.duration:.2f}s): {archive}")
+                        else:
+                            err_msg = result.error[:50] if result.error else "未知错误"
+                            progress.console.print(f"  [red]✗[/red] {display_name} | {err_msg}")
+                            if callback:
+                                callback.log(f"❌ 失败: {archive.name} - {result.error}")
+                            logger.error(f"失败: {archive} - {result.error}")
+                        
+                        progress.update(main_task, completed=completed,
+                                       description=f"[cyan]并行解压: {completed}/{total}")
+                    except TimeoutError:
+                        continue
+                    except Exception as e:
+                        completed += 1
+                        results.append(ExtractResult(archive, False, error=str(e)))
+                        progress.update(main_task, completed=completed)
+    finally:
+        # 恢复原始信号处理
+        signal.signal(signal.SIGINT, original_handler)
+    
+    return results
+
 
 
 # ============ 兼容旧 API ============
@@ -406,9 +611,12 @@ def run_once(paths: List[Path], bz_path: Path, sleep_after: float = 0.0,
 
 
 def run(paths: List[Path], delete: bool = True, use_trash: bool = True, 
-        overwrite_mode: str = "overwrite") -> int:
-    """执行批量解压（兼容旧 API）"""
-    result = extract_batch(paths, delete, use_trash, overwrite_mode)
+        overwrite_mode: str = "overwrite", parallel: bool = False, workers: int = None) -> int:
+    """执行批量解压（兼容旧 API，支持并行）"""
+    result = extract_batch(
+        paths, delete, use_trash, overwrite_mode,
+        parallel=parallel, workers=workers
+    )
     if not result.success and result.total == 0:
         logger.error(result.message)
         return 1
@@ -431,6 +639,8 @@ def main():
     parser.add_argument("--skip", action="store_true", help="跳过已存在文件")
     parser.add_argument("--rename", action="store_true", help="自动重命名已存在文件")
     parser.add_argument("--yes", action="store_true", help="非交互模式")
+    parser.add_argument("--parallel", "-P", action="store_true", help="启用并行解压")
+    parser.add_argument("--workers", "-w", type=int, default=None, help="并行工作线程数")
     parser.add_argument("--debug", action="store_true", help="显示调试日志")
     args = parser.parse_args()
 
@@ -523,7 +733,11 @@ def main():
     else:
         overwrite_mode = "overwrite"
 
-    code = run(collected, delete=delete, use_trash=use_trash, overwrite_mode=overwrite_mode)
+    code = run(
+        collected, delete=delete, use_trash=use_trash, 
+        overwrite_mode=overwrite_mode, 
+        parallel=args.parallel, workers=args.workers
+    )
     sys.exit(code)
 
 
