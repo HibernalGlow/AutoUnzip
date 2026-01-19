@@ -78,7 +78,9 @@ def delete(
 
 @app.command()
 def extract(
-    output: str = typer.Option(".", "-o", "--output", help="Output directory"),
+    output: str = typer.Option(".", "-o", "--output", help="Base output directory"),
+    near: bool = typer.Option(False, "--near", help="Extract near the source archive"),
+    auto_dir: bool = typer.Option(False, "--auto-dir", help="Create subfolder named after archive"),
     flatten: bool = typer.Option(False, "--flatten", help="Extract without internal directory structure"),
     dry_run: bool = typer.Option(False, "--dry-run", help="Show what would be done"),
     separator: str = typer.Option("//", "--sep", help="Separator between archive and internal path"),
@@ -95,7 +97,17 @@ def extract(
     
     for archive_path, archive_entries in groups.items():
         internal_paths = [e.internal_path for e in archive_entries]
-        result = extract_files(archive_path, internal_paths, output, dry_run=dry_run, flatten=flatten)
+        
+        # Calculate destination
+        final_output = output
+        if near:
+            final_output = str(Path(archive_path).parent)
+        
+        if auto_dir:
+            # Add archive stem as subfolder
+            final_output = str(Path(final_output) / Path(archive_path).stem)
+            
+        result = extract_files(archive_path, internal_paths, final_output, dry_run=dry_run, flatten=flatten)
         if result.success:
             console.print(f"[green]✓[/green] {result.message}")
         else:
@@ -104,7 +116,9 @@ def extract(
 
 @app.command()
 def move(
-    output: str = typer.Option(".", "-o", "--output", help="Destination directory outside"),
+    output: str = typer.Option(".", "-o", "--output", help="Base destination directory"),
+    near: bool = typer.Option(False, "--near", help="Extract near the source archive"),
+    auto_dir: bool = typer.Option(False, "--auto-dir", help="Create subfolder named after archive"),
     flatten: bool = typer.Option(False, "--flatten", help="Extract without internal directory structure"),
     confirm: bool = typer.Option(True, "--confirm/--no-confirm", help="Ask for confirmation"),
     dry_run: bool = typer.Option(False, "--dry-run", help="Show what would be done"),
@@ -120,33 +134,42 @@ def move(
 
     groups = group_by_archive(entries)
     
-    console.print(f"Plan: Move {len(entries)} file(s) from archives to [cyan]{output}[/cyan]")
+    console.print(f"Plan: Move {len(entries)} file(s) from archives.")
     
-    if dry_run:
-        console.print("[bold yellow]Dry run mode: No operations will be executed.[/bold yellow]")
-        for archive_path, archive_entries in groups.items():
-            internal_paths = [e.internal_path for e in archive_entries]
-            console.print(f"  [cyan]{Path(archive_path).name}[/cyan] -> {len(internal_paths)} files")
-        return
-        
-    if confirm and not Confirm.ask("Proceed with move operation (extraction followed by deletion)?"):
+    if confirm and not dry_run and not Confirm.ask("Proceed with move operation (extraction followed by deletion)?"):
         console.print("[yellow]Cancelled.[/yellow]")
         return
 
     for archive_path, archive_entries in groups.items():
         internal_paths = [e.internal_path for e in archive_entries]
         
-        ext_result = extract_files(archive_path, internal_paths, output, dry_run=False, flatten=flatten)
+        # Calculate destination
+        final_output = output
+        if near:
+            final_output = str(Path(archive_path).parent)
+        
+        if auto_dir:
+            final_output = str(Path(final_output) / Path(archive_path).stem)
+            
+        # 1. Extract
+        ext_result = extract_files(archive_path, internal_paths, final_output, dry_run=dry_run, flatten=flatten)
         if not ext_result.success:
             console.print(f"[red]✗ Extraction failed for {archive_path}, skipping deletion.[/red]")
             console.print(f"  Error: {ext_result.message}")
             continue
             
-        console.print(f"[green]✓[/green] Extracted files from {Path(archive_path).name}")
+        if dry_run:
+            console.print(f"[yellow]i[/yellow] {ext_result.message}")
+        else:
+            console.print(f"[green]✓[/green] Extracted files to {final_output}")
         
-        del_result = delete_files(archive_path, internal_paths, dry_run=False)
+        # 2. Delete from archive
+        del_result = delete_files(archive_path, internal_paths, dry_run=dry_run)
         if del_result.success:
-            console.print(f"[green]✓[/green] Removed original files from {Path(archive_path).name}")
+            if dry_run:
+                console.print(f"[yellow]i[/yellow] {del_result.message}")
+            else:
+                console.print(f"[green]✓[/green] Removed original files from {Path(archive_path).name}")
         else:
             console.print(f"[red]✗ Failed to remove originals from {archive_path}[/red]")
             console.print(f"  Error: {del_result.message}")
