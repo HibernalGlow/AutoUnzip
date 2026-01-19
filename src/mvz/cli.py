@@ -3,7 +3,12 @@
 import os
 import sys
 from pathlib import Path
-from typing import List, Optional
+from typing import List, Optional, Iterable, Iterator
+
+try:
+    import pyperclip
+except ImportError:
+    pyperclip = None
 
 import typer
 from rich.console import Console
@@ -30,19 +35,60 @@ def check_7z():
         raise typer.Exit(1)
 
 
+def get_input_iterator(
+    input_file: Optional[Path] = None,
+    clipboard: bool = False,
+) -> Iterator[str]:
+    """Get iterator for input lines from file, clipboard, or stdin."""
+    if input_file:
+        if not input_file.exists():
+            console.print(f"[red]Error: Input file not found: {input_file}[/red]")
+            raise typer.Exit(1)
+        # We read the whole file to avoid keeping it open or potential issues with yielding from closed file
+        # For huge files this might be an issue but for this tool's purpose it's fine.
+        # Actually, yielding from context manager works if we consume it immediately.
+        with open(input_file, "r", encoding="utf-8") as f:
+            for line in f:
+                yield line
+        return
+
+    if clipboard:
+        if pyperclip is None:
+            console.print("[red]Error: pyperclip not installed. Cannot read from clipboard.[/red]")
+            console.print("Install with: pip install pyperclip")
+            raise typer.Exit(1)
+        
+        content = pyperclip.paste()
+        if not content:
+            console.print("[yellow]Clipboard is empty.[/yellow]")
+            return
+            
+        for line in content.splitlines():
+            yield line
+        return
+    
+    # Default to stdin
+    if sys.stdin.isatty():
+        console.print("[yellow]Waiting for input from stdin (e.g., findz ... | mvz ...)[/yellow]")
+        console.print("[dim]Or use --input/-i <file> or --clipboard/--clip[/dim]")
+        
+    for line in sys.stdin:
+        yield line
+
+
 @app.command()
 def delete(
+    input_file: Optional[Path] = typer.Option(None, "--input", "-i", help="Input file containing paths"),
+    clipboard: bool = typer.Option(False, "--clipboard", "--clip", help="Read input from clipboard"),
     confirm: bool = typer.Option(True, "--confirm/--no-confirm", help="Ask for confirmation"),
     dry_run: bool = typer.Option(False, "--dry-run", help="Show what would be done without executing"),
     separator: str = typer.Option("//", "--sep", help="Separator between archive and internal path"),
 ):
-    """Delete files from archives (read from stdin)."""
+    """Delete files from archives."""
     check_7z()
     
-    if sys.stdin.isatty():
-        console.print("[yellow]Waiting for input from stdin (e.g., findz ... | mvz delete)[/yellow]")
-    
-    entries = list(parse_input(separator=separator))
+    iterator = get_input_iterator(input_file, clipboard)
+    entries = list(parse_input(iterator, separator=separator))
     if not entries:
         console.print("[yellow]No archive entries found in input.[/yellow]")
         return
@@ -78,6 +124,8 @@ def delete(
 
 @app.command()
 def extract(
+    input_file: Optional[Path] = typer.Option(None, "--input", "-i", help="Input file containing paths"),
+    clipboard: bool = typer.Option(False, "--clipboard", "--clip", help="Read input from clipboard"),
     output: str = typer.Option(".", "-o", "--output", help="Base output directory"),
     near: bool = typer.Option(False, "--near", help="Extract near the source archive"),
     auto_dir: bool = typer.Option(False, "--auto-dir", help="Create subfolder named after archive"),
@@ -85,10 +133,11 @@ def extract(
     dry_run: bool = typer.Option(False, "--dry-run", help="Show what would be done"),
     separator: str = typer.Option("//", "--sep", help="Separator between archive and internal path"),
 ):
-    """Extract files from archives (read from stdin)."""
+    """Extract files from archives."""
     check_7z()
     
-    entries = list(parse_input(separator=separator))
+    iterator = get_input_iterator(input_file, clipboard)
+    entries = list(parse_input(iterator, separator=separator))
     if not entries:
         console.print("[yellow]No archive entries found in input.[/yellow]")
         return
@@ -116,6 +165,8 @@ def extract(
 
 @app.command()
 def move(
+    input_file: Optional[Path] = typer.Option(None, "--input", "-i", help="Input file containing paths"),
+    clipboard: bool = typer.Option(False, "--clipboard", "--clip", help="Read input from clipboard"),
     output: str = typer.Option(".", "-o", "--output", help="Base destination directory"),
     near: bool = typer.Option(False, "--near", help="Extract near the source archive"),
     auto_dir: bool = typer.Option(False, "--auto-dir", help="Create subfolder named after archive"),
@@ -127,7 +178,8 @@ def move(
     """Move files OUT of archives to a directory (extract + delete)."""
     check_7z()
     
-    entries = list(parse_input(separator=separator))
+    iterator = get_input_iterator(input_file, clipboard)
+    entries = list(parse_input(iterator, separator=separator))
     if not entries:
         console.print("[yellow]No archive entries found in input.[/yellow]")
         return
@@ -179,15 +231,18 @@ def move(
 def rename(
     pattern: str = typer.Argument(..., help="Regex pattern to find"),
     replacement: str = typer.Argument(..., help="Replacement string"),
+    input_file: Optional[Path] = typer.Option(None, "--input", "-i", help="Input file containing paths"),
+    clipboard: bool = typer.Option(False, "--clipboard", "--clip", help="Read input from clipboard"),
     dry_run: bool = typer.Option(False, "--dry-run", help="Show what would be done"),
     separator: str = typer.Option("//", "--sep", help="Separator between archive and internal path"),
     confirm: bool = typer.Option(True, "--confirm/--no-confirm", help="Ask for confirmation"),
 ):
-    """Rename files inside archives using regex (read from stdin)."""
+    """Rename files inside archives using regex."""
     import re
     check_7z()
     
-    entries = list(parse_input(separator=separator))
+    iterator = get_input_iterator(input_file, clipboard)
+    entries = list(parse_input(iterator, separator=separator))
     if not entries:
         console.print("[yellow]No archive entries found in input.[/yellow]")
         return

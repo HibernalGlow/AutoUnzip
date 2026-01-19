@@ -76,14 +76,14 @@ def parse_line(line: str, separator: str = "//") -> Optional[ArchiveEntry]:
 
 
 def parse_input(
-    input_source: Optional[TextIO] = None,
+    input_source: Optional[Iterator[str]] = None,
     separator: str = "//",
     skip_non_archive: bool = True,
 ) -> Iterator[ArchiveEntry]:
     """Parse findz output from stdin or file.
     
     Args:
-        input_source: Text stream to read from (default: stdin)
+        input_source: Iterator yielding lines (default: stdin)
         separator: Separator between archive and internal path
         skip_non_archive: If True, skip lines that are not archive entries
     
