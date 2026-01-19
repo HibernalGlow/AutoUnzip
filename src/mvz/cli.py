@@ -214,5 +214,10 @@ def rename(
             console.print(f"[red]✗[/red] {result.message}")
 
 
-if __name__ == "__main__":
+def main():
+    """Entry point for the mvz CLI."""
     app()
+
+
+if __name__ == "__main__":
+    main()
