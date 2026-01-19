@@ -144,6 +144,66 @@ def get_image_dimensions(filepath: str) -> Optional[ImageDimensions]:
     return None
 
 
+def get_image_dimensions_from_bytes(data: bytes, filename: str = "") -> Optional[ImageDimensions]:
+    """
+    从字节流获取图片尺寸信息（用于压缩包内的文件）
+    
+    Args:
+        data: 图片文件的字节数据
+        filename: 文件名（用于判断格式）
+        
+    Returns:
+        ImageDimensions 对象，如果无法读取则返回 None
+    """
+    if not data:
+        return None
+    
+    ext = os.path.splitext(filename)[1].lower() if filename else ""
+    
+    # 不是图片文件
+    if ext and ext not in IMAGE_EXTENSIONS:
+        return None
+    
+    dimensions = None
+    
+    # 策略1: 尝试使用 imagesize（从字节流）
+    if not ext or ext in IMAGESIZE_EXTENSIONS:
+        try:
+            import imagesize
+            import io
+            width, height = imagesize.get(io.BytesIO(data))
+            if width > 0 and height > 0:
+                dimensions = (width, height)
+        except (ImportError, Exception):
+            pass
+    
+    # 策略2: 使用 Pillow（从字节流）
+    if dimensions is None:
+        try:
+            # 尝试导入 Pillow 插件
+            try:
+                import pillow_avif  # noqa: F401
+            except ImportError:
+                pass
+            
+            try:
+                import pillow_jxl  # noqa: F401
+            except ImportError:
+                pass
+            
+            from PIL import Image
+            import io
+            with Image.open(io.BytesIO(data)) as img:
+                dimensions = img.size
+        except (ImportError, Exception):
+            pass
+    
+    if dimensions:
+        return ImageDimensions(width=dimensions[0], height=dimensions[1])
+    
+    return None
+
+
 @lru_cache(maxsize=10000)
 def get_image_dimensions_cached(filepath: str, mtime: float) -> Optional[ImageDimensions]:
     """

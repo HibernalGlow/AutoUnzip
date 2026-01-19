@@ -60,7 +60,7 @@ class FileInfo:
         """
         获取图片尺寸（延迟加载，带缓存）
         
-        注意：只对文件系统上的文件有效，压缩包内的文件不支持
+        支持文件系统上的文件和压缩包内的文件
         """
         if self._image_dims_loaded:
             return self._image_dims_cache
@@ -71,23 +71,99 @@ class FileInfo:
         if not FileInfo._image_meta_enabled:
             return None
         
-        # 只对非压缩包内的文件读取
-        if self.container:
-            return None
-        
         # 只对文件（非目录）读取
         if self.file_type != "file":
             return None
         
         try:
-            from ..filter.image_meta import get_image_dimensions_cached
-            # 使用文件的修改时间作为缓存 key 的一部分
-            mtime = self.mod_time.timestamp() if self.mod_time else 0
-            self._image_dims_cache = get_image_dimensions_cached(self.path, mtime)
+            # 情况1: 文件系统上的文件
+            if not self.container:
+                from ..filter.image_meta import get_image_dimensions_cached
+                # 使用文件的修改时间作为缓存 key 的一部分
+                mtime = self.mod_time.timestamp() if self.mod_time else 0
+                self._image_dims_cache = get_image_dimensions_cached(self.path, mtime)
+            
+            # 情况2: 压缩包内的文件
+            else:
+                from ..filter.image_meta import get_image_dimensions_from_bytes
+                
+                # 从压缩包中读取文件数据
+                data = self._read_from_archive()
+                if data:
+                    self._image_dims_cache = get_image_dimensions_from_bytes(data, self.name)
+                
         except Exception:
             self._image_dims_cache = None
         
         return self._image_dims_cache
+    
+    def _read_from_archive(self) -> Optional[bytes]:
+        """从压缩包中读取文件数据"""
+        if not self.container:
+            return None
+        
+        try:
+            if self.archive == "zip":
+                import zipfile
+                # 打开 ZIP 文件（不指定编码，使用默认）
+                with zipfile.ZipFile(self.container, 'r') as zf:
+                    # 尝试直接读取（UTF-8 路径）
+                    try:
+                        return zf.read(self.path)
+                    except KeyError:
+                        # 如果失败，尝试将 UTF-8 路径转换回原始编码
+                        # 因为 list_files_in_zip 做了 cp437->gbk 的转换
+                        # 这里需要反向转换：utf-8->gbk->cp437
+                        try:
+                            original_path = self.path.encode('gbk').decode('cp437')
+                            return zf.read(original_path)
+                        except (KeyError, UnicodeDecodeError, UnicodeEncodeError):
+                            pass
+                        
+                        # 如果还是失败，尝试遍历 ZIP 查找匹配的文件
+                        # 对每个 ZIP 内的文件名进行相同的编码转换，看是否匹配
+                        for info in zf.infolist():
+                            filename = info.filename
+                            try:
+                                if not (info.flag_bits & 0x800):
+                                    # 尝试 cp437->gbk 转换
+                                    try:
+                                        filename = info.filename.encode('cp437').decode('gbk')
+                                    except (UnicodeDecodeError, UnicodeEncodeError):
+                                        try:
+                                            filename = info.filename.encode('cp437').decode('utf-8')
+                                        except (UnicodeDecodeError, UnicodeEncodeError):
+                                            pass
+                            except Exception:
+                                pass
+                            
+                            if filename == self.path:
+                                return zf.read(info.filename)
+                        
+                        return None
+            
+            elif self.archive == "tar":
+                import tarfile
+                with tarfile.open(self.container, 'r:*') as tf:
+                    member = tf.getmember(self.path)
+                    f = tf.extractfile(member)
+                    return f.read() if f else None
+            
+            elif self.archive == "7z":
+                import py7zr
+                with py7zr.SevenZipFile(self.container, 'r') as szf:
+                    data = szf.read([self.path])
+                    return data.get(self.path)
+            
+            elif self.archive == "rar":
+                import rarfile
+                with rarfile.RarFile(self.container, 'r') as rf:
+                    return rf.read(self.path)
+        
+        except Exception:
+            return None
+        
+        return None
     
     def context(self) -> callable:
         """Return a function that can get file properties by name."""
@@ -275,7 +351,7 @@ def list_files_in_zip(fullpath: str) -> list[FileInfo]:
                         size=info.file_size,
                         file_type=file_type,
                         container=fullpath,
-                        archive=fullpath,
+                        archive="zip",
                     )
                 )
             return files

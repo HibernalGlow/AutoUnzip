@@ -6,11 +6,11 @@ import tempfile
 from pathlib import Path
 from unittest.mock import patch, MagicMock
 
-# 模块导入
+# 模块导入 - 使用完整模块路径
 import sys
-sys.path.insert(0, str(Path(__file__).parent.parent))
+sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
-from filter.image_meta import (
+from findz.filter.image_meta import (
     ImageDimensions,
     get_image_dimensions,
     get_image_dimensions_cached,
@@ -20,8 +20,6 @@ from filter.image_meta import (
     IMAGE_EXTENSIONS,
     IMAGESIZE_EXTENSIONS,
     PILLOW_EXTENSIONS,
-    _get_dimensions_imagesize,
-    _get_dimensions_pillow,
 )
 
 
@@ -158,49 +156,6 @@ class TestResolutionMatches:
         assert resolution_matches(dims, "invalid") is False
 
 
-class TestGetDimensionsImagesize:
-    """测试 imagesize 后端"""
-    
-    def test_with_mock(self):
-        """模拟 imagesize 返回结果"""
-        with patch('filter.image_meta.imagesize') as mock_imagesize:
-            mock_imagesize.get.return_value = (1920, 1080)
-            result = _get_dimensions_imagesize("fake_path.jpg")
-            assert result == (1920, 1080)
-    
-    def test_invalid_dimensions(self):
-        """无效尺寸返回 None"""
-        with patch('filter.image_meta.imagesize') as mock_imagesize:
-            mock_imagesize.get.return_value = (-1, -1)
-            result = _get_dimensions_imagesize("fake_path.jpg")
-            assert result is None
-    
-    def test_import_error(self):
-        """imagesize 未安装时返回 None"""
-        with patch.dict('sys.modules', {'imagesize': None}):
-            # 这里需要重新导入模块来测试 ImportError
-            # 简化测试：直接 mock 抛出异常
-            with patch('filter.image_meta.imagesize', side_effect=ImportError):
-                pass  # 实际测试在集成测试中
-
-
-class TestGetDimensionsPillow:
-    """测试 Pillow 后端"""
-    
-    def test_with_mock(self):
-        """模拟 Pillow 返回结果"""
-        mock_image = MagicMock()
-        mock_image.size = (1920, 1080)
-        mock_image.__enter__ = MagicMock(return_value=mock_image)
-        mock_image.__exit__ = MagicMock(return_value=False)
-        
-        with patch('PIL.Image.open', return_value=mock_image):
-            with patch('filter.image_meta.Image') as mock_Image:
-                mock_Image.open.return_value.__enter__.return_value.size = (1920, 1080)
-                # 简化测试
-                pass
-
-
 class TestImageExtensionSets:
     """测试扩展名集合完整性"""
     
@@ -230,7 +185,7 @@ class TestGetImageDimensionsCached:
         # Clear the cache first
         get_image_dimensions_cached.cache_clear()
         
-        with patch('filter.image_meta.get_image_dimensions') as mock_get:
+        with patch('findz.filter.image_meta.get_image_dimensions') as mock_get:
             mock_get.return_value = ImageDimensions(width=100, height=100)
             
             # 第一次调用
@@ -246,7 +201,7 @@ class TestGetImageDimensionsCached:
         """mtime 变化时缓存失效测试"""
         get_image_dimensions_cached.cache_clear()
         
-        with patch('filter.image_meta.get_image_dimensions') as mock_get:
+        with patch('findz.filter.image_meta.get_image_dimensions') as mock_get:
             mock_get.return_value = ImageDimensions(width=100, height=100)
             
             # 不同 mtime 应该分别调用
@@ -261,7 +216,7 @@ class TestFileInfoImageMetaIntegration:
     
     def test_enable_image_meta(self):
         """启用图片元数据测试"""
-        from find.find import FileInfo
+        from findz.find.find import FileInfo
         
         # 初始状态
         original_state = FileInfo._image_meta_enabled
@@ -279,7 +234,7 @@ class TestFileInfoImageMetaIntegration:
     
     def test_context_returns_image_fields(self):
         """context() 方法返回图片字段测试"""
-        from find.find import FileInfo
+        from findz.find.find import FileInfo
         from datetime import datetime
         
         # 启用图片元数据
@@ -313,7 +268,7 @@ class TestFileInfoImageMetaIntegration:
     
     def test_disabled_returns_none(self):
         """禁用时返回 None 测试"""
-        from find.find import FileInfo
+        from findz.find.find import FileInfo
         from datetime import datetime
         
         # 确保禁用
@@ -334,54 +289,240 @@ class TestFileInfoImageMetaIntegration:
         assert getter("height") is None
 
 
-# 集成测试（需要真实图片文件，可选执行）
+# 集成测试（需要真实图片文件）
 class TestRealImageFiles:
     """真实图片文件集成测试（使用临时文件）"""
     
-    @pytest.fixture
-    def create_test_png(self):
-        """创建测试用 PNG 文件"""
+    def test_real_png_dimensions(self, tmp_path):
+        """真实 PNG 文件尺寸读取测试"""
         try:
             from PIL import Image
         except ImportError:
             pytest.skip("Pillow not installed")
         
-        with tempfile.NamedTemporaryFile(suffix='.png', delete=False) as f:
-            img = Image.new('RGB', (1200, 630), color='red')
-            img.save(f.name)
-            yield f.name
-            os.unlink(f.name)
-    
-    def test_real_png_dimensions(self, create_test_png):
-        """真实 PNG 文件尺寸读取测试"""
-        dims = get_image_dimensions(create_test_png)
+        png_path = tmp_path / "test.png"
+        img = Image.new('RGB', (1200, 630), color='red')
+        img.save(png_path)
+        
+        dims = get_image_dimensions(str(png_path))
         
         assert dims is not None
         assert dims.width == 1200
         assert dims.height == 630
         assert dims.resolution == "1200x630"
     
-    @pytest.fixture
-    def create_test_jpg(self):
-        """创建测试用 JPEG 文件"""
+    def test_real_jpg_dimensions(self, tmp_path):
+        """真实 JPEG 文件尺寸读取测试"""
         try:
             from PIL import Image
         except ImportError:
             pytest.skip("Pillow not installed")
         
-        with tempfile.NamedTemporaryFile(suffix='.jpg', delete=False) as f:
-            img = Image.new('RGB', (1920, 1080), color='blue')
-            img.save(f.name, 'JPEG')
-            yield f.name
-            os.unlink(f.name)
-    
-    def test_real_jpg_dimensions(self, create_test_jpg):
-        """真实 JPEG 文件尺寸读取测试"""
-        dims = get_image_dimensions(create_test_jpg)
+        jpg_path = tmp_path / "test.jpg"
+        img = Image.new('RGB', (1920, 1080), color='blue')
+        img.save(jpg_path, 'JPEG')
+        
+        dims = get_image_dimensions(str(jpg_path))
         
         assert dims is not None
         assert dims.width == 1920
         assert dims.height == 1080
+
+
+class TestGetImageDimensions:
+    """测试 get_image_dimensions 函数的边界情况"""
+    
+    def test_nonexistent_file(self):
+        """不存在的文件应返回 None"""
+        dims = get_image_dimensions("/nonexistent/path/image.jpg")
+        assert dims is None
+    
+    def test_non_image_file(self, tmp_path):
+        """非图片文件应返回 None"""
+        txt_file = tmp_path / "test.txt"
+        txt_file.write_text("not an image")
+        
+        dims = get_image_dimensions(str(txt_file))
+        assert dims is None
+    
+    def test_corrupted_image(self, tmp_path):
+        """损坏的图片文件应返回 None"""
+        fake_img = tmp_path / "corrupted.jpg"
+        fake_img.write_bytes(b"not a real jpeg file")
+        
+        dims = get_image_dimensions(str(fake_img))
+        assert dims is None
+    
+    def test_empty_file(self, tmp_path):
+        """空文件应返回 None"""
+        empty_file = tmp_path / "empty.png"
+        empty_file.write_bytes(b"")
+        
+        dims = get_image_dimensions(str(empty_file))
+        assert dims is None
+
+
+class TestImageDimensionsEdgeCases:
+    """测试 ImageDimensions 的边界情况"""
+    
+    def test_very_large_dimensions(self):
+        """超大尺寸图片测试"""
+        dims = ImageDimensions(width=30000, height=20000)
+        assert dims.megapixels == 600.0
+        assert dims.resolution == "30000x20000"
+    
+    def test_very_small_dimensions(self):
+        """超小尺寸图片测试"""
+        dims = ImageDimensions(width=1, height=1)
+        assert dims.megapixels == 0.000001
+        assert dims.aspect_ratio == 1.0
+    
+    def test_extreme_aspect_ratio(self):
+        """极端宽高比测试"""
+        # 超宽图片
+        dims = ImageDimensions(width=10000, height=100)
+        assert dims.aspect_ratio == 100.0
+        
+        # 超高图片
+        dims = ImageDimensions(width=100, height=10000)
+        assert dims.aspect_ratio == 0.01
+
+
+class TestRealImageFormats:
+    """测试不同图片格式的真实文件读取"""
+    
+    def test_gif_dimensions(self, tmp_path):
+        """GIF 格式测试"""
+        try:
+            from PIL import Image
+        except ImportError:
+            pytest.skip("Pillow not installed")
+        
+        gif_path = tmp_path / "test.gif"
+        img = Image.new('RGB', (800, 600), color='green')
+        img.save(gif_path, 'GIF')
+        
+        dims = get_image_dimensions(str(gif_path))
+        assert dims is not None
+        assert dims.width == 800
+        assert dims.height == 600
+    
+    def test_webp_dimensions(self, tmp_path):
+        """WebP 格式测试"""
+        try:
+            from PIL import Image
+        except ImportError:
+            pytest.skip("Pillow not installed")
+        
+        webp_path = tmp_path / "test.webp"
+        try:
+            img = Image.new('RGB', (1024, 768), color='yellow')
+            img.save(webp_path, 'WEBP')
+            
+            dims = get_image_dimensions(str(webp_path))
+            assert dims is not None
+            assert dims.width == 1024
+            assert dims.height == 768
+        except Exception:
+            pytest.skip("WebP support not available")
+    
+    def test_bmp_dimensions(self, tmp_path):
+        """BMP 格式测试"""
+        try:
+            from PIL import Image
+        except ImportError:
+            pytest.skip("Pillow not installed")
+        
+        bmp_path = tmp_path / "test.bmp"
+        img = Image.new('RGB', (640, 480), color='cyan')
+        img.save(bmp_path, 'BMP')
+        
+        dims = get_image_dimensions(str(bmp_path))
+        assert dims is not None
+        assert dims.width == 640
+        assert dims.height == 480
+
+
+class TestParseResolutionEdgeCases:
+    """测试 parse_resolution 的边界情况"""
+    
+    def test_zero_dimensions(self):
+        """零尺寸测试"""
+        assert parse_resolution("0x0") == (0, 0)
+        assert parse_resolution("100x0") == (100, 0)
+        assert parse_resolution("0x100") == (0, 100)
+    
+    def test_very_large_numbers(self):
+        """超大数字测试"""
+        assert parse_resolution("99999x99999") == (99999, 99999)
+    
+    def test_mixed_separators(self):
+        """混合分隔符（应该失败）"""
+        assert parse_resolution("1920x1080*720") is None
+    
+    def test_negative_numbers(self):
+        """负数（应该失败）"""
+        assert parse_resolution("-1920x1080") is None
+        assert parse_resolution("1920x-1080") is None
+    
+    def test_decimal_numbers(self):
+        """小数（应该失败）"""
+        assert parse_resolution("1920.5x1080") is None
+
+
+class TestResolutionMatchesEdgeCases:
+    """测试 resolution_matches 的边界情况"""
+    
+    def test_zero_dimensions_match(self):
+        """零尺寸匹配测试"""
+        dims = ImageDimensions(width=0, height=0)
+        assert resolution_matches(dims, "0x0") is True
+        assert resolution_matches(dims, "1x1") is False
+    
+    def test_case_insensitive_separator(self):
+        """分隔符大小写不敏感测试"""
+        dims = ImageDimensions(width=1920, height=1080)
+        assert resolution_matches(dims, "1920x1080") is True
+        assert resolution_matches(dims, "1920X1080") is True
+        assert resolution_matches(dims, "1920*1080") is True
+
+
+class TestCachePerformance:
+    """测试缓存性能和行为"""
+    
+    def test_cache_info(self):
+        """缓存信息测试"""
+        get_image_dimensions_cached.cache_clear()
+        
+        # 初始状态
+        info = get_image_dimensions_cached.cache_info()
+        assert info.hits == 0
+        assert info.misses == 0
+        
+        # 调用几次
+        with patch('findz.filter.image_meta.get_image_dimensions') as mock_get:
+            mock_get.return_value = ImageDimensions(width=100, height=100)
+            
+            get_image_dimensions_cached("test1.jpg", 1.0)
+            get_image_dimensions_cached("test1.jpg", 1.0)  # 缓存命中
+            get_image_dimensions_cached("test2.jpg", 2.0)  # 缓存未命中
+            
+            info = get_image_dimensions_cached.cache_info()
+            assert info.hits == 1
+            assert info.misses == 2
+    
+    def test_cache_clear(self):
+        """缓存清除测试"""
+        get_image_dimensions_cached.cache_clear()
+        
+        with patch('findz.filter.image_meta.get_image_dimensions') as mock_get:
+            mock_get.return_value = ImageDimensions(width=100, height=100)
+            
+            get_image_dimensions_cached("test.jpg", 1.0)
+            get_image_dimensions_cached.cache_clear()
+            
+            info = get_image_dimensions_cached.cache_info()
+            assert info.currsize == 0
 
 
 if __name__ == "__main__":

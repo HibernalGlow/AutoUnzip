@@ -75,6 +75,11 @@ class FilterExpression:
             # Look up the symbol value
             val = getter(node.symbol)
             if val is None:
+                # 对于图片元数据字段，如果返回 None，表示无法读取
+                # 这种情况下，让比较失败（返回 False）而不是报错
+                if node.symbol.lower() in ('width', 'height', 'resolution', 'megapixels', 'aspect'):
+                    # 返回一个特殊的 None 值，在比较时会返回 False
+                    return Value(number=None, text=None, boolean=None)
                 raise ValueError(f"Unknown symbol: {node.symbol}")
             return val
         

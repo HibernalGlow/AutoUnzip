@@ -208,13 +208,25 @@ def find_in_archive_cached(
         for entry in index.files:
             # 延迟创建 FileInfo，只在需要时创建
             # 使用缓存中存储的 file_type，而不是硬编码
+            # 推断 archive 类型
+            archive_type = ""
+            if archive_path.endswith('.zip'):
+                archive_type = "zip"
+            elif archive_path.endswith(('.tar', '.tar.gz', '.tar.bz2', '.tar.xz', '.tgz')):
+                archive_type = "tar"
+            elif archive_path.endswith('.7z'):
+                archive_type = "7z"
+            elif archive_path.endswith('.rar'):
+                archive_type = "rar"
+            
             fi = FileInfo(
                 name=entry.name,
                 path=entry.path,
                 mod_time=datetime.fromtimestamp(entry.mtime),
                 size=entry.size,
                 file_type=entry.file_type,
-                archive=archive_path,
+                container=archive_path,  # 设置 container 字段
+                archive=archive_type,  # 设置正确的 archive 类型
             )
             
             try:

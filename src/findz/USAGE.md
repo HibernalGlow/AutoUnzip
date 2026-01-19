@@ -80,6 +80,7 @@ findz "1" /path -G dir
 ## 二次筛选（-R）
 
 搜索后对结果进行过滤，支持的字段：
+
 - `count` - 文件数量
 - `avg_size` - 平均大小
 - `total_size` - 总大小
@@ -167,35 +168,56 @@ findz -G archive -R "avg_size > 1M"
 
 ## 常用选项速查
 
-| 选项 | 说明 |
-|------|------|
-| `-l` | 详细格式（日期、大小） |
-| `-A` | 只输出压缩包路径 |
-| `-N` | 查找嵌套压缩包 |
-| `-n` | 禁用压缩包搜索 |
-| `-G` | 分组统计（archive/ext/dir） |
-| `-R` | 二次筛选表达式 |
-| `-S` | 排序字段 |
-| `-o` | 保存到文件 |
-| `--json` | JSON 输出 |
-| `--csv` | CSV 输出 |
-| `-H` | 显示过滤语法帮助 |
+| 选项     | 说明                        |
+| -------- | --------------------------- |
+| `-l`     | 详细格式（日期、大小）      |
+| `-A`     | 只输出压缩包路径            |
+| `-N`     | 查找嵌套压缩包              |
+| `-n`     | 禁用压缩包搜索              |
+| `-G`     | 分组统计（archive/ext/dir） |
+| `-R`     | 二次筛选表达式              |
+| `-S`     | 排序字段                    |
+| `-o`     | 保存到文件                  |
+| `--json` | JSON 输出                   |
+| `--csv`  | CSV 输出                    |
+| `-H`     | 显示过滤语法帮助            |
 
 ## 过滤语法
 
 ### 字段
 
-| 字段 | 说明 | 示例 |
-|------|------|------|
-| `name` | 文件名 | `name = 'test.py'` |
-| `path` | 完整路径 | `path LIKE '%/src/%'` |
-| `ext` | 扩展名 | `ext = 'py'` |
-| `size` | 文件大小 | `size > 1M` |
-| `date` | 修改日期 | `date = '2025-01-01'` |
-| `time` | 修改时间 | `time > '14:00:00'` |
-| `type` | 类型 | `type = 'file'` |
-| `archive` | 压缩包类型 | `archive = 'zip'` |
-| `container` | 所在压缩包 | `container LIKE '%.zip'` |
+| 字段         | 说明       | 示例                      |
+| ------------ | ---------- | ------------------------- |
+| `name`       | 文件名     | `name = 'test.py'`        |
+| `path`       | 完整路径   | `path LIKE '%/src/%'`     |
+| `ext`        | 扩展名     | `ext = 'py'`              |
+| `size`       | 文件大小   | `size > 1M`               |
+| `date`       | 修改日期   | `date = '2025-01-01'`     |
+| `time`       | 修改时间   | `time > '14:00:00'`       |
+| `type`       | 类型       | `type = 'file'`           |
+| `archive`    | 压缩包类型 | `archive = 'zip'`         |
+| `container`  | 所在压缩包 | `container LIKE '%.zip'`  |
+| `width`      | 图片宽度   | `width > 1000`            |
+| `height`     | 图片高度   | `height > 800`            |
+| `resolution` | 分辨率     | `resolution = '1200x630'` |
+| `megapixels` | 百万像素   | `megapixels > 8`          |
+| `aspect`     | 宽高比     | `aspect > 1.5`            |
+
+### 图片过滤示例 (需要 `-I` 或 `--with-image-meta` 启用)
+
+```bash
+# 查找特定分辨率
+findz -I "resolution = '1200x630'"
+
+# 查找 4K 图片
+findz -I "width >= 3840"
+
+# 查找长图
+findz -I "aspect > 2"
+
+# 查找高清图片（百万像素 > 8）
+findz -I "megapixels > 8"
+```
 
 ### 操作符
 
