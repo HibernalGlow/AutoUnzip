@@ -810,6 +810,12 @@ def main(
         "--interactive",
         help="Enter interactive mode"
     ),
+    with_image_meta: bool = typer.Option(
+        False,
+        "-I",
+        "--with-image-meta",
+        help="启用图片元数据过滤（支持 width/height/resolution/megapixels/aspect 字段）"
+    ),
 ) -> None:
     """
     Search for files using SQL-like WHERE clause syntax.
@@ -910,6 +916,11 @@ def main(
     # Handle paths
     if not paths:
         paths = ["."]
+    
+    # 启用图片元数据（如果请求）
+    if with_image_meta:
+        from .find.find import FileInfo
+        FileInfo.enable_image_meta(True)
     
     # Execute search
     result_files = execute_search(

@@ -23,6 +23,9 @@ class FindError(Exception):
 class FileInfo:
     """Information about a file or directory."""
     
+    # 类级别标志：是否启用图片元数据读取
+    _image_meta_enabled: bool = False
+    
     def __init__(
         self,
         name: str,
@@ -40,10 +43,51 @@ class FileInfo:
         self.file_type = file_type  # "file", "dir", "link"
         self.container = container
         self.archive = archive  # "tar", "zip", "7z", "rar", or ""
+        # 延迟加载的图片尺寸缓存
+        self._image_dims_cache = None
+        self._image_dims_loaded = False
+    
+    @classmethod
+    def enable_image_meta(cls, enabled: bool = True):
+        """启用或禁用图片元数据读取"""
+        cls._image_meta_enabled = enabled
     
     def is_dir(self) -> bool:
         """Check if this is a directory."""
         return self.file_type == "dir"
+    
+    def _get_image_dimensions(self):
+        """
+        获取图片尺寸（延迟加载，带缓存）
+        
+        注意：只对文件系统上的文件有效，压缩包内的文件不支持
+        """
+        if self._image_dims_loaded:
+            return self._image_dims_cache
+        
+        self._image_dims_loaded = True
+        
+        # 只在启用了图片元数据时读取
+        if not FileInfo._image_meta_enabled:
+            return None
+        
+        # 只对非压缩包内的文件读取
+        if self.container:
+            return None
+        
+        # 只对文件（非目录）读取
+        if self.file_type != "file":
+            return None
+        
+        try:
+            from ..filter.image_meta import get_image_dimensions_cached
+            # 使用文件的修改时间作为缓存 key 的一部分
+            mtime = self.mod_time.timestamp() if self.mod_time else 0
+            self._image_dims_cache = get_image_dimensions_cached(self.path, mtime)
+        except Exception:
+            self._image_dims_cache = None
+        
+        return self._image_dims_cache
     
     def context(self) -> callable:
         """Return a function that can get file properties by name."""
@@ -76,6 +120,22 @@ class FileInfo:
                 return text_value(datetime.now().strftime("%Y-%m-%d"))
             elif name_lower in ("mo", "tu", "we", "th", "fr", "sa", "su"):
                 return self._get_last_weekday(name_lower)
+            # ========== 图片元数据字段 ==========
+            elif name_lower == "width":
+                dims = self._get_image_dimensions()
+                return number_value(dims.width) if dims else None
+            elif name_lower == "height":
+                dims = self._get_image_dimensions()
+                return number_value(dims.height) if dims else None
+            elif name_lower == "resolution":
+                dims = self._get_image_dimensions()
+                return text_value(dims.resolution) if dims else None
+            elif name_lower == "megapixels":
+                dims = self._get_image_dimensions()
+                return number_value(int(dims.megapixels * 100) / 100) if dims else None
+            elif name_lower == "aspect":
+                dims = self._get_image_dimensions()
+                return number_value(int(dims.aspect_ratio * 100) / 100) if dims else None
             else:
                 return None
         
@@ -325,7 +385,6 @@ def list_files_in_archive(fullpath: str) -> Optional[list[FileInfo]]:
     else:
         return None
 
-
 # Export field names for CSV output
 FIELDS = [
     "name",
@@ -338,4 +397,13 @@ FIELDS = [
     "ext2",
     "type",
     "archive",
+]
+
+# 图片元数据字段（需要 --with-image-meta 启用）
+IMAGE_FIELDS = [
+    "width",
+    "height", 
+    "resolution",
+    "megapixels",
+    "aspect",
 ]

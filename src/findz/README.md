@@ -122,6 +122,32 @@ Example: `'ext in ("jpg", "png", "gif")'`
 - `today` - Today's date
 - `mo`, `tu`, `we`, `th`, `fr`, `sa`, `su` - Last occurrence of each weekday
 
+### Image Properties (需要 `--with-image-meta` 或 `-I` 启用)
+
+这些字段仅对图片文件有效，需要使用 `-I` 或 `--with-image-meta` 选项启用。
+
+- `width` - 图片宽度（像素）
+- `height` - 图片高度（像素）
+- `resolution` - 分辨率字符串（如 "1920x1080"）
+- `megapixels` - 百万像素数（如 2.07）
+- `aspect` - 宽高比（如 1.78）
+
+**支持的图片格式:**
+
+- 常见格式: PNG, JPG/JPEG, GIF, WebP, TIFF, SVG, JP2
+- 新格式: JXL (JPEG XL), AVIF, HEIC/HEIF (需要安装 pillow 插件)
+- 其他: BMP, ICO, DDS, TGA, PSD
+
+**安装依赖:**
+
+```bash
+# 基础支持（最快）
+pip install imagesize pillow
+
+# JXL/AVIF 支持
+pip install pillow-jxl-plugin pillow-avif-plugin
+```
+
 ## Command-Line Options
 
 ```
@@ -135,6 +161,7 @@ Options:
   --archive-separator TEXT    Separator between archive and file (default: //)
   -L, --follow-symlinks       Follow symbolic links
   -n, --no-archive           Disable archive support
+  -I, --with-image-meta       启用图片元数据过滤（width/height/resolution等）
   -0, --print0               Use null character instead of newline
   -V, --version              Show version
   --help                     Show this message and exit
@@ -189,6 +216,28 @@ findz 'name like "%.conf" and date >= mo'
 
 # Find duplicate file names
 findz 'name = "config.json"' --csv
+```
+
+### Image filtering (图片过滤)
+
+```bash
+# 查找特定分辨率的图片（如社交媒体封面 1200x630）
+findz 'resolution = "1200x630"' -I
+
+# 查找 4K 及以上分辨率的图片
+findz 'width >= 3840 and ext in ("jpg", "png")' -I
+
+# 查找高度在特定范围的图片
+findz 'height between 600 and 800' -I
+
+# 查找宽图（宽高比 > 2）
+findz 'aspect > 2' -I
+
+# 查找高清图片（百万像素 > 8）
+findz 'megapixels > 8' -I
+
+# 组合条件：社交媒体尺寸 + 文件大小
+findz 'width = 1200 and height = 630 and size < 500K' -I
 ```
 
 ## Archive Support

@@ -21,6 +21,13 @@ from .unified import (
     validate_filter,
     detect_filter_mode,
 )
+from .image_meta import (
+    ImageDimensions,
+    get_image_dimensions,
+    get_image_dimensions_cached,
+    is_image_file,
+    IMAGE_EXTENSIONS,
+)
 
 __all__ = [
     # 原有导出
@@ -47,4 +54,10 @@ __all__ = [
     "json_to_sql",
     "validate_filter",
     "detect_filter_mode",
+    # 图片元数据
+    "ImageDimensions",
+    "get_image_dimensions",
+    "get_image_dimensions_cached",
+    "is_image_file",
+    "IMAGE_EXTENSIONS",
 ]
