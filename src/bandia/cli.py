@@ -6,9 +6,8 @@ bandia CLI - 使用 Typer 构建的命令行界面
 """
 
 import json
-import sys
 from pathlib import Path
-from typing import List, Optional
+from typing import Annotated, List, Optional
 
 import typer
 from rich.console import Console
@@ -39,17 +38,17 @@ def check_bz():
 
 @app.command("extract", help="解压压缩包")
 def extract(
-    paths: List[str] = typer.Argument(None, help="压缩包路径列表"),
-    clipboard: bool = typer.Option(False, "--clipboard", "--clip", help="从剪贴板读取路径"),
-    delete: bool = typer.Option(True, "--delete/--keep", "-d/-k", help="解压后删除源文件"),
-    trash: bool = typer.Option(True, "--trash/--no-trash", "-t/-T", help="使用回收站"),
-    parallel: bool = typer.Option(False, "--parallel", "-P", help="启用并行解压"),
-    workers: Optional[int] = typer.Option(None, "--workers", "-w", help="并行工作线程数"),
-    overwrite: str = typer.Option("overwrite", "--overwrite-mode", "-o", help="冲突处理: overwrite/skip/rename"),
-    mode: str = typer.Option("auto", "--mode", "-m", help="解压模式: auto(智能)/normal(普通)"),
-    prefix: str = typer.Option("【a】", "--prefix", "-p", help="普通模式输出目录前缀"),
-    confirm: bool = typer.Option(True, "--confirm/--no-confirm", help="是否确认"),
-    output_json: bool = typer.Option(False, "--json", "-j", help="输出 JSON 格式结果（含路径映射）"),
+    paths: Annotated[Optional[List[str]], typer.Argument(help="压缩包路径列表")] = None,
+    clipboard: Annotated[bool, typer.Option("--clipboard", "--clip", help="从剪贴板读取路径")] = False,
+    delete: Annotated[bool, typer.Option("--delete/--keep", "-d/-k", help="解压后删除源文件")] = True,
+    trash: Annotated[bool, typer.Option("--trash/--no-trash", "-t/-T", help="使用回收站")] = True,
+    parallel: Annotated[bool, typer.Option("--parallel", "-P", help="启用并行解压")] = False,
+    workers: Annotated[Optional[int], typer.Option("--workers", "-w", help="并行工作线程数")] = None,
+    overwrite: Annotated[str, typer.Option("--overwrite-mode", "-o", help="冲突处理: overwrite/skip/rename")] = "overwrite",
+    mode: Annotated[str, typer.Option("--mode", "-m", help="解压模式: auto(智能)/normal(普通)")] = "auto",
+    prefix: Annotated[str, typer.Option("--prefix", "-p", help="普通模式输出目录前缀")] = "【a】",
+    confirm: Annotated[bool, typer.Option("--confirm/--no-confirm", help="是否确认")] = True,
+    output_json: Annotated[bool, typer.Option("--json", "-j", help="输出 JSON 格式结果（含路径映射）")] = False,
 ):
     """解压压缩包，支持批量操作和路径映射导出"""
     check_bz()
@@ -158,11 +157,11 @@ def extract(
 
 @app.command("compress", help="压缩目录")
 def compress(
-    paths: List[str] = typer.Argument(None, help="目录路径列表"),
-    output_dir: Optional[str] = typer.Option(None, "--output", "-o", help="输出目录"),
-    delete: bool = typer.Option(True, "--delete/--keep", "-d/-k", help="压缩后删除源目录"),
-    format: str = typer.Option("zip", "--format", "-f", help="压缩格式: zip/7z"),
-    confirm: bool = typer.Option(True, "--confirm/--no-confirm", help="是否确认"),
+    paths: Annotated[Optional[List[str]], typer.Argument(help="目录路径列表")] = None,
+    output_dir: Annotated[Optional[str], typer.Option("--output", "-o", help="输出目录")] = None,
+    delete: Annotated[bool, typer.Option("--delete/--keep", "-d/-k", help="压缩后删除源目录")] = True,
+    format: Annotated[str, typer.Option("--format", "-f", help="压缩格式: zip/7z")] = "zip",
+    confirm: Annotated[bool, typer.Option("--confirm/--no-confirm", help="是否确认")] = True,
 ):
     """压缩目录为压缩包"""
     check_bz()
@@ -225,10 +224,10 @@ def compress(
 
 @app.command("repack", help="根据路径映射重新压缩")
 def repack(
-    mapping_file: Optional[str] = typer.Argument(None, help="路径映射 JSON 文件"),
-    clipboard: bool = typer.Option(False, "--clipboard", "--clip", help="从剪贴板读取映射 JSON"),
-    delete: bool = typer.Option(True, "--delete/--keep", "-d/-k", help="压缩后删除源目录"),
-    confirm: bool = typer.Option(True, "--confirm/--no-confirm", help="是否确认"),
+    mapping_file: Annotated[Optional[str], typer.Argument(help="路径映射 JSON 文件")] = None,
+    clipboard: Annotated[bool, typer.Option("--clipboard", "--clip", help="从剪贴板读取映射 JSON")] = False,
+    delete: Annotated[bool, typer.Option("--delete/--keep", "-d/-k", help="压缩后删除源目录")] = True,
+    confirm: Annotated[bool, typer.Option("--confirm/--no-confirm", help="是否确认")] = True,
 ):
     """
     根据路径映射重新压缩（恢复原始压缩包）
