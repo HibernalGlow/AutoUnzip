@@ -19,6 +19,7 @@ from .core import (
     compress_single,
     compress_batch,
     get_output_path,
+    export_efu,
 )
 
 # 导出类型
@@ -49,6 +50,7 @@ __all__ = [
     "compress_single",
     "compress_batch",
     "get_output_path",
+    "export_efu",
     # 类型
     "ExtractResult",
     "BatchExtractResult",

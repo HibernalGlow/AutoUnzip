@@ -625,3 +625,93 @@ def compress_batch(
         total=total,
         results=results
     )
+
+
+# ============ EFU 导出功能 ============
+
+def export_efu(
+    paths: List[Path],
+    output_path: Path,
+    open_in_everything: bool = True
+) -> bool:
+    """
+    将路径列表导出为 Everything File List (EFU) 格式
+    
+    Args:
+        paths: 要导出的路径列表（文件夹或文件）
+        output_path: EFU 文件的输出路径
+        open_in_everything: 是否自动用 Everything 打开
+        
+    Returns:
+        是否成功导出
+    """
+    import os
+    import csv
+    
+    try:
+        # 确保输出目录存在
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        
+        # 写入 EFU 文件 (UTF-8 with BOM for Windows compatibility)
+        with open(output_path, 'w', encoding='utf-8-sig', newline='') as f:
+            writer = csv.writer(f)
+            # EFU 标题行
+            writer.writerow(['Filename', 'Size', 'Date Modified', 'Date Created', 'Attributes'])
+            
+            for p in paths:
+                if not p.exists():
+                    continue
+                    
+                try:
+                    stat = p.stat()
+                    # Windows FILETIME: 100-nanosecond intervals since January 1, 1601
+                    # Python timestamp: seconds since January 1, 1970
+                    # 差值: 116444736000000000 (100-ns intervals)
+                    EPOCH_DIFF = 116444736000000000
+                    
+                    mtime = int(stat.st_mtime * 10000000) + EPOCH_DIFF
+                    ctime = int(stat.st_ctime * 10000000) + EPOCH_DIFF
+                    
+                    # 文件属性: 16 = 目录, 32 = 普通文件
+                    attrs = 16 if p.is_dir() else 32
+                    size = 0 if p.is_dir() else stat.st_size
+                    
+                    writer.writerow([str(p.resolve()), size, mtime, ctime, attrs])
+                except Exception as e:
+                    logger.warning(f"无法获取文件信息: {p} - {e}")
+                    # 即使获取不到详细信息也写入基础信息
+                    writer.writerow([str(p.resolve()), 0, 0, 0, 16 if p.is_dir() else 32])
+        
+        logger.info(f"已导出 {len(paths)} 个路径到 EFU: {output_path}")
+        
+        # 自动用 Everything 打开
+        if open_in_everything:
+            try:
+                # 尝试查找 Everything 可执行文件
+                everything_paths = [
+                    Path(os.environ.get('PROGRAMFILES', '')) / 'Everything' / 'Everything.exe',
+                    Path(os.environ.get('PROGRAMFILES(X86)', '')) / 'Everything' / 'Everything.exe',
+                    Path(os.environ.get('LOCALAPPDATA', '')) / 'Everything' / 'Everything.exe',
+                ]
+                
+                everything_exe = None
+                for ep in everything_paths:
+                    if ep.exists():
+                        everything_exe = ep
+                        break
+                
+                if everything_exe:
+                    subprocess.Popen([str(everything_exe), '-filelist', str(output_path.resolve())])
+                    logger.info(f"已用 Everything 打开: {output_path}")
+                else:
+                    # 尝试直接用关联程序打开
+                    os.startfile(str(output_path.resolve()))
+                    
+            except Exception as e:
+                logger.warning(f"无法自动打开 EFU: {e}")
+        
+        return True
+        
+    except Exception as e:
+        logger.error(f"导出 EFU 失败: {e}")
+        return False
