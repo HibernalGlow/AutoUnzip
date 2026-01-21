@@ -456,10 +456,9 @@ def compress_single(
     archive_path.parent.mkdir(parents=True, exist_ok=True)
     
     # 构建压缩命令
-    # bz c [-y] [-sdel] <archive> <source>
-    cmd = [str(bz_path), "c", "-y"]
-    if delete_source:
-        cmd.append("-sdel")  # 压缩后删除源文件
+    # bz a [-y] <archive> <source>
+    # 注意: 不使用 -sdel，因为某些版本 Bandizip 会报 Parameter Parsing Error
+    cmd = [str(bz_path), "a", "-y"]
     cmd.extend([str(archive_path), str(source)])
     
     start_time = time.time()
@@ -481,6 +480,22 @@ def compress_single(
     if proc.returncode != 0:
         error_msg = proc.stderr or proc.stdout or f"返回码 {proc.returncode}"
         return CompressResult(source, archive_path, False, duration, error_msg[:200])
+    
+    # 压缩成功后手动删除源文件
+    if delete_source:
+        try:
+            # 优先使用回收站
+            send2trash(str(source))
+        except Exception as e:
+            logger.warning(f"删除源文件失败 (尝试 send2trash): {e}")
+            try:
+                if source.is_dir():
+                    import shutil
+                    shutil.rmtree(source)
+                else:
+                    source.unlink()
+            except Exception as e2:
+                logger.error(f"删除源文件失败 (物理删除): {e2}")
     
     return CompressResult(source, archive_path, True, duration)
 
