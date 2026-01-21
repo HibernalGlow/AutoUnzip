@@ -25,6 +25,14 @@ app = typer.Typer(
     add_completion=False,
 )
 
+# Windows encoding fix
+import sys
+if sys.platform == "win32" and hasattr(sys.stdout, "reconfigure"):
+    try:
+        sys.stdout.reconfigure(encoding="utf-8")
+    except Exception:
+        pass
+
 console = Console()
 
 

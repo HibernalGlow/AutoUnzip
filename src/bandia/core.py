@@ -26,6 +26,14 @@ from .utils import (
     reset_shutdown_event, ProgressCallback, DEFAULT_PARALLEL_WORKERS
 )
 
+# Windows encoding fix
+import sys
+if sys.platform == "win32" and hasattr(sys.stdout, "reconfigure"):
+    try:
+        sys.stdout.reconfigure(encoding="utf-8")
+    except Exception:
+        pass
+
 console = Console()
 
 
@@ -268,8 +276,17 @@ def _extract_sequential(
     total = len(paths)
     shutdown_event = get_shutdown_event()
     
+    # Check if we can support unicode
+    use_unicode = True
+    try:
+        if sys.platform == "win32":
+            # On Windows, checked if we successfully reconfigured to utf-8
+            use_unicode = getattr(sys.stdout, "encoding", "").lower().replace("-", "") == "utf8"
+    except Exception:
+        use_unicode = False
+
     with Progress(
-        SpinnerColumn(),
+        SpinnerColumn(spinner_name="dots" if use_unicode else "simpleDots"),
         TextColumn("[bold blue]{task.description}"),
         BarColumn(bar_width=40),
         TaskProgressColumn(),
@@ -339,8 +356,16 @@ def _extract_parallel(
     
     console.print(f"[cyan]⚡ 并行解压模式: {workers} 个工作线程[/cyan]")
     
+    # Check if we can support unicode
+    use_unicode = True
+    try:
+        if sys.platform == "win32":
+            use_unicode = getattr(sys.stdout, "encoding", "").lower().replace("-", "") == "utf8"
+    except Exception:
+        use_unicode = False
+
     with Progress(
-        SpinnerColumn(),
+        SpinnerColumn(spinner_name="dots" if use_unicode else "simpleDots"),
         TextColumn("[bold blue]{task.description}"),
         BarColumn(bar_width=40),
         TaskProgressColumn(),
@@ -509,8 +534,16 @@ def compress_batch(
     results: List[CompressResult] = []
     shutdown_event = get_shutdown_event()
     
+    # Check if we can support unicode
+    use_unicode = True
+    try:
+        if sys.platform == "win32":
+            use_unicode = getattr(sys.stdout, "encoding", "").lower().replace("-", "") == "utf8"
+    except Exception:
+        use_unicode = False
+
     with Progress(
-        SpinnerColumn(),
+        SpinnerColumn(spinner_name="dots" if use_unicode else "simpleDots"),
         TextColumn("[bold blue]{task.description}"),
         BarColumn(bar_width=40),
         TaskProgressColumn(),
