@@ -455,11 +455,13 @@ def compress_single(
     # 确保输出目录存在
     archive_path.parent.mkdir(parents=True, exist_ok=True)
     
-    # 构建压缩命令
-    # bz a [-y] <archive> <source>
+    # 构建压缩命令 - 使用相对路径以避免某些版本 Bandizip 对长路径或特殊字符的解析错误
     # 注意: 不使用 -sdel，因为某些版本 Bandizip 会报 Parameter Parsing Error
-    cmd = [str(bz_path), "a", "-y"]
-    cmd.extend([str(archive_path), str(source)])
+    cwd = source.parent
+    archive_name = archive_path.name
+    source_name = source.name
+    
+    cmd = [str(bz_path), "a", "-y", archive_name, source_name]
     
     start_time = time.time()
     
@@ -471,6 +473,7 @@ def compress_single(
             text=True,
             encoding="utf-8",
             errors="replace",
+            cwd=cwd
         )
     except Exception as e:
         return CompressResult(source, archive_path, False, error=str(e))
@@ -478,8 +481,11 @@ def compress_single(
     duration = time.time() - start_time
     
     if proc.returncode != 0:
-        error_msg = proc.stderr or proc.stdout or f"返回码 {proc.returncode}"
-        return CompressResult(source, archive_path, False, duration, error_msg[:200])
+        error_msg = (proc.stderr or proc.stdout or f"返回码 {proc.returncode}").strip()
+        # 如果长度太长，保留末尾部分，因为错误通常在末尾
+        if len(error_msg) > 500:
+            error_msg = "..." + error_msg[-497:]
+        return CompressResult(source, archive_path, False, duration, error_msg)
     
     # 压缩成功后手动删除源文件
     if delete_source:
