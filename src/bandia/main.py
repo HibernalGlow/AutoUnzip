@@ -64,7 +64,6 @@ class ExtractResult:
     output_path: Optional[Path] = None  # 解压后的实际目录路径
 
 
-
 @dataclass
 class BatchResult:
     """批量解压结果"""
@@ -74,6 +73,27 @@ class BatchResult:
     failed: int = 0
     total: int = 0
     results: List[ExtractResult] = field(default_factory=list)
+
+
+@dataclass
+class CompressResult:
+    """单个压缩结果"""
+    source_path: Path  # 源目录路径
+    archive_path: Path  # 目标压缩包路径
+    success: bool
+    duration: float = 0.0
+    error: str = ""
+
+
+@dataclass
+class CompressBatchResult:
+    """批量压缩结果"""
+    success: bool
+    message: str
+    compressed: int = 0
+    failed: int = 0
+    total: int = 0
+    results: List[CompressResult] = field(default_factory=list)
 
 
 # ============ 进度回调类 ============

@@ -1,50 +1,169 @@
-# bandia
+# Bandia - 批量解压/压缩工具
 
-一次性批量解压：支持 (1) 直接传参路径 (2) 剪贴板读取 (3) 交互式多行输入。调用 Bandizip 控制台工具 `bz.exe`；可选择解压成功后删除源压缩包。
+使用 Bandizip (bz.exe) 进行批量解压和压缩操作。
 
 ## 功能
-- 从剪贴板 / 命令行参数 / 交互输入批量获取路径
-- 调用 `bz.exe x -target:auto <archive>` 自动目标路径
-- 可选：成功后删除源压缩包（交互确认或使用参数）
+
+- **解压 (extract)**: 批量解压 `.zip .7z .rar .tar .gz .bz2 .xz` 格式
+- **压缩 (compress)**: 批量压缩目录到压缩包
+- **重压缩 (repack)**: 根据路径映射恢复原始压缩包
+- 支持剪贴板/参数/交互式输入
+- 支持解压/压缩后删除源文件（可选移入回收站）
+- 支持进度回调（用于 GUI/WebSocket 集成）
+- 支持并行处理提升性能
+- 支持 Ctrl+C 优雅中断
 
 ## 安装
-项目内新增脚本入口：
-```
-uv run bandia --help
-```
-或安装后直接：
-```
-bandia --help
+
+```bash
+pip install typer rich pyperclip send2trash loguru
 ```
 
-## 使用示例
-1. 在资源管理器中复制多个 zip / 7z / rar 文件（或完整路径，换行分隔）到剪贴板。
-2. 运行（直接用剪贴板并自动删除）：
-```
-bandia --clipboard --delete
-```
-3. 或交互模式：不加参数直接执行 `bandia`，按提示选择来源并输入/粘贴多行后回车空行结束。
-4. 实际对每个文件执行：
-```
-bz.exe x -target:auto "<路径>"
-```
-5. 根据选择删除或保留源压缩包。
+## CLI 使用
 
-## 参数
-```
-paths...        直接提供的压缩包路径 (可多个)
---clipboard     从剪贴板读取（换行分隔）
---delete        物理删除（不进回收站）
---trash         成功后移入回收站（默认策略，多数情况下无需显式加）
---keep          强制保留（覆盖 --delete / --trash）
---no-clipboard  禁用默认的自动剪贴板尝试
---yes           非交互模式：不再询问（依赖前述默认策略）
---debug         显示调试解析日志
+### 解压
+
+```bash
+# 从剪贴板解压（默认行为）
+bandia extract
+
+# 解压指定文件
+bandia extract path/to/archive.zip path/to/another.7z
+
+# 从剪贴板读取路径
+bandia extract --clipboard
+
+# 并行解压
+bandia extract -P --workers 4
+
+# 保留源文件（不删除）
+bandia extract --keep
+
+# 输出 JSON 格式结果（含路径映射）
+bandia extract --json
 ```
 
-**删除策略说明**：优先级 `--keep` > `--delete` > `--trash` / 默认(自动剪贴板时默认回收站)。删除/回收仅在对应文件解压成功 (exit code 0) 后执行。
+### 压缩
 
-## 备注
-- 仅根据扩展名筛选：.zip .7z .rar .tar .gz .bz2 .xz
-- 默认（无路径且未禁用）时：自动读取剪贴板并建议移入回收站。
-- 使用回收站可通过资源管理器还原；物理删除不可恢复。
+```bash
+# 压缩目录
+bandia compress folder1 folder2
+
+# 指定输出目录
+bandia compress folder1 --output /path/to/output
+
+# 保留源目录（不删除）
+bandia compress folder1 --keep
+
+# 使用 7z 格式
+bandia compress folder1 --format 7z
+```
+
+### 重压缩（恢复压缩）
+
+```bash
+# 从文件读取映射
+bandia repack mappings.json
+
+# 从剪贴板读取映射
+bandia repack --clipboard
+
+# 保留源目录
+bandia repack --clipboard --keep
+```
+
+映射 JSON 格式：
+
+```json
+{
+  "mappings": [
+    {"archive_path": "/path/to/archive.zip", "extracted_path": "/path/to/folder"},
+    ...
+  ]
+}
+```
+
+## API 使用
+
+```python
+from bandia import extract_batch, compress_batch, PathMapping, ProgressCallback
+
+# 解压
+result = extract_batch(
+    paths=[Path("archive.zip")],
+    delete=True,
+    use_trash=True,
+    parallel=True
+)
+
+print(f"成功: {result.extracted}, 失败: {result.failed}")
+for r in result.results:
+    if r.success:
+        print(f"{r.path} -> {r.output_path}")
+
+# 压缩（根据映射恢复）
+mappings = [
+    PathMapping(archive_path="/path/to/archive.zip", extracted_path="/path/to/folder")
+]
+result = compress_batch(
+    mappings=mappings,
+    delete_source=True
+)
+
+# 使用进度回调
+callback = ProgressCallback(
+    on_progress=lambda p, msg, f: print(f"{p}%: {msg}"),
+    on_log=lambda msg: print(msg),
+    throttle_interval=0.1
+)
+
+result = extract_batch(paths=[...], callback=callback)
+```
+
+## 模块结构
+
+```
+bandia/
+├── __init__.py    # 导出核心函数供 API 使用
+├── cli.py         # Typer CLI 入口 (子命令: extract, compress, repack)
+├── core.py        # 核心业务逻辑
+├── types.py       # 数据类定义
+├── utils.py       # 工具函数
+└── main.py        # 旧入口点 (已弃用)
+```
+
+## 导出的 API
+
+```python
+# 核心函数
+from bandia import (
+    extract_single,    # 解压单个文件
+    extract_batch,     # 批量解压
+    compress_single,   # 压缩单个目录
+    compress_batch,    # 批量压缩
+    get_output_path,   # 计算解压输出路径
+)
+
+# 类型
+from bandia import (
+    ExtractResult,
+    BatchExtractResult,
+    CompressResult,
+    BatchCompressResult,
+    PathMapping,
+)
+
+# 工具
+from bandia import (
+    ProgressCallback,
+    find_bz_executable,
+    parse_text_paths,
+    filter_archives,
+)
+```
+
+## 依赖
+
+- **Bandizip**: 需要安装 Bandizip 并确保 `bz.exe` 在 PATH 中或设置 `BANDIZIP_PATH` 环境变量
+- **Python**: >= 3.10
+- **依赖包**: typer, rich, pyperclip, send2trash, loguru
