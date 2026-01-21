@@ -28,6 +28,7 @@ from .types import (
     CompressResult,
     BatchCompressResult,
     PathMapping,
+    ExtractMode,
 )
 
 # 导出工具
@@ -54,6 +55,7 @@ __all__ = [
     "CompressResult",
     "BatchCompressResult",
     "PathMapping",
+    "ExtractMode",
     # 工具
     "ProgressCallback",
     "find_bz_executable",

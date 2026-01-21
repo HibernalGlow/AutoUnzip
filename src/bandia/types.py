@@ -3,8 +3,16 @@ bandia 数据类型定义
 """
 
 from dataclasses import dataclass, field
+from enum import Enum
 from pathlib import Path
 from typing import List, Optional, Dict
+
+
+class ExtractMode(str, Enum):
+    """解压模式"""
+    AUTO = "auto"      # 智能解压 (-target:auto)
+    NORMAL = "normal"  # 普通解压 (到【前缀】压缩包名文件夹)
+
 
 
 @dataclass

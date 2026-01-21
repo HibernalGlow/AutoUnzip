@@ -19,7 +19,7 @@ from rich.progress import (
 
 from .types import (
     ExtractResult, BatchExtractResult,
-    CompressResult, BatchCompressResult, PathMapping
+    CompressResult, BatchCompressResult, PathMapping, ExtractMode
 )
 from .utils import (
     find_bz_executable, filter_archives, get_shutdown_event, 
@@ -95,9 +95,21 @@ def extract_single(
     bz_path: Path,
     delete: bool = True,
     use_trash: bool = True,
-    overwrite_mode: str = "overwrite"
+    overwrite_mode: str = "overwrite",
+    extract_mode: ExtractMode = ExtractMode.AUTO,
+    output_prefix: str = "【a】"
 ) -> ExtractResult:
-    """解压单个压缩包"""
+    """解压单个压缩包
+    
+    Args:
+        archive: 压缩包路径
+        bz_path: Bandizip 可执行文件路径
+        delete: 解压后删除源文件
+        use_trash: 使用回收站
+        overwrite_mode: 冲突处理模式 (overwrite/skip/rename)
+        extract_mode: 解压模式 (auto/normal)
+        output_prefix: 普通模式输出前缀 (默认 "【a】")
+    """
     shutdown_event = get_shutdown_event()
     
     if shutdown_event.is_set():
@@ -114,12 +126,21 @@ def extract_single(
     except Exception:
         file_size = 0
     
-    output_path = get_output_path(archive, bz_path)
-    
     mode_flags = {"overwrite": "-aoa", "skip": "-aos", "rename": "-aou"}
     conflict_flag = mode_flags.get(overwrite_mode, "-aoa")
     
-    cmd = [str(bz_path), "x", "-y", conflict_flag, "-target:auto", str(archive)]
+    # 根据解压模式构建命令
+    if extract_mode == ExtractMode.AUTO:
+        # 智能解压
+        output_path = get_output_path(archive, bz_path)
+        cmd = [str(bz_path), "x", "-y", conflict_flag, "-target:auto", str(archive)]
+    else:
+        # 普通解压 - 到【前缀】压缩包名 目录
+        target_dir = archive.parent / f"{output_prefix}{archive.stem}"
+        target_dir.mkdir(parents=True, exist_ok=True)
+        output_path = target_dir
+        cmd = [str(bz_path), "x", "-y", conflict_flag, f"-o:{target_dir}", str(archive)]
+    
     start_time = time.time()
     
     try:
@@ -159,9 +180,23 @@ def extract_batch(
     overwrite_mode: str = "overwrite",
     callback: Optional[ProgressCallback] = None,
     parallel: bool = False,
-    workers: Optional[int] = None
+    workers: Optional[int] = None,
+    extract_mode: ExtractMode = ExtractMode.AUTO,
+    output_prefix: str = "【a】"
 ) -> BatchExtractResult:
-    """批量解压压缩包"""
+    """批量解压压缩包
+    
+    Args:
+        paths: 压缩包路径列表
+        delete: 解压后删除源文件
+        use_trash: 使用回收站
+        overwrite_mode: 冲突处理模式
+        callback: 进度回调
+        parallel: 是否并行解压
+        workers: 并行工作线程数
+        extract_mode: 解压模式 (auto/normal)
+        output_prefix: 普通模式输出前缀
+    """
     reset_shutdown_event()
     
     bz_path = find_bz_executable()
@@ -173,6 +208,8 @@ def extract_batch(
     
     if callback:
         callback.log(f"使用 Bandizip: {bz_path}")
+        mode_desc = "智能解压" if extract_mode == ExtractMode.AUTO else f"普通解压 (前缀: {output_prefix})"
+        callback.log(f"解压模式: {mode_desc}")
     
     paths = filter_archives(paths)
     if not paths:
@@ -187,11 +224,13 @@ def extract_batch(
     if parallel and total > 1:
         results = _extract_parallel(
             paths, bz_path, delete, use_trash, overwrite_mode,
-            workers or DEFAULT_PARALLEL_WORKERS, callback
+            workers or DEFAULT_PARALLEL_WORKERS, callback,
+            extract_mode, output_prefix
         )
     else:
         results = _extract_sequential(
-            paths, bz_path, delete, use_trash, overwrite_mode, callback
+            paths, bz_path, delete, use_trash, overwrite_mode, callback,
+            extract_mode, output_prefix
         )
     
     extracted = sum(1 for r in results if r.success)
@@ -220,7 +259,9 @@ def _extract_sequential(
     delete: bool,
     use_trash: bool,
     overwrite_mode: str,
-    callback: Optional[ProgressCallback]
+    callback: Optional[ProgressCallback],
+    extract_mode: ExtractMode = ExtractMode.AUTO,
+    output_prefix: str = "【a】"
 ) -> List[ExtractResult]:
     """串行解压"""
     results: List[ExtractResult] = []
@@ -253,7 +294,10 @@ def _extract_sequential(
                 callback.progress(progress_pct, f"STARTED:{idx}", archive.name)
                 callback.progress(progress_pct, f"解压 {idx + 1}/{total}", archive.name)
             
-            result = extract_single(archive, bz_path, delete, use_trash, overwrite_mode)
+            result = extract_single(
+                archive, bz_path, delete, use_trash, overwrite_mode,
+                extract_mode, output_prefix
+            )
             results.append(result)
             
             if result.success:
@@ -283,7 +327,9 @@ def _extract_parallel(
     use_trash: bool,
     overwrite_mode: str,
     workers: int,
-    callback: Optional[ProgressCallback]
+    callback: Optional[ProgressCallback],
+    extract_mode: ExtractMode = ExtractMode.AUTO,
+    output_prefix: str = "【a】"
 ) -> List[ExtractResult]:
     """并行解压"""
     results: List[ExtractResult] = []
@@ -314,7 +360,8 @@ def _extract_parallel(
                     callback.progress(progress_pct, f"STARTED:{idx}", archive.name)
                 
                 future = executor.submit(
-                    extract_single, archive, bz_path, delete, use_trash, overwrite_mode
+                    extract_single, archive, bz_path, delete, use_trash, overwrite_mode,
+                    extract_mode, output_prefix
                 )
                 futures[future] = (idx, archive)
             

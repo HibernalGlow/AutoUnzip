@@ -66,3 +66,8 @@ include = '\.pyi?$'
 profile = "black"
 line_length = 88
 
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_functions = ["test_*"]
+addopts = "-v --tb=short"

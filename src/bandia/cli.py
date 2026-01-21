@@ -1,6 +1,8 @@
 """
 bandia CLI - 使用 Typer 构建的命令行界面
 支持子命令: extract, compress, repack
+
+参考 mvz CLI 风格
 """
 
 import json
@@ -10,35 +12,48 @@ from typing import List, Optional
 
 import typer
 from rich.console import Console
-from rich.table import Table
+from rich.panel import Panel
 from rich.prompt import Confirm
+from rich.table import Table
 
 from .core import extract_batch, compress_batch
-from .types import PathMapping
-from .utils import parse_text_paths, filter_archives
+from .types import PathMapping, ExtractMode
+from .utils import parse_text_paths, filter_archives, find_bz_executable
 
 app = typer.Typer(
     name="bandia",
     help="批量解压/压缩工具 - 使用 Bandizip",
-    add_completion=False
+    add_completion=False,
 )
 
 console = Console()
 
 
+def check_bz():
+    """检查 Bandizip 是否可用"""
+    if not find_bz_executable():
+        console.print("[bold red]错误:[/bold red] 未找到 Bandizip (bz.exe)")
+        console.print("请安装 Bandizip 或设置环境变量 BANDIZIP_PATH")
+        raise typer.Exit(1)
+
+
 @app.command("extract", help="解压压缩包")
 def extract(
     paths: List[str] = typer.Argument(None, help="压缩包路径列表"),
-    clipboard: bool = typer.Option(False, "--clipboard", "-c", help="从剪贴板读取路径"),
+    clipboard: bool = typer.Option(False, "--clipboard", "--clip", help="从剪贴板读取路径"),
     delete: bool = typer.Option(True, "--delete/--keep", "-d/-k", help="解压后删除源文件"),
     trash: bool = typer.Option(True, "--trash/--no-trash", "-t/-T", help="使用回收站"),
     parallel: bool = typer.Option(False, "--parallel", "-P", help="启用并行解压"),
     workers: Optional[int] = typer.Option(None, "--workers", "-w", help="并行工作线程数"),
     overwrite: str = typer.Option("overwrite", "--overwrite-mode", "-o", help="冲突处理: overwrite/skip/rename"),
-    yes: bool = typer.Option(False, "--yes", "-y", help="非交互模式"),
+    mode: str = typer.Option("auto", "--mode", "-m", help="解压模式: auto(智能)/normal(普通)"),
+    prefix: str = typer.Option("【a】", "--prefix", "-p", help="普通模式输出目录前缀"),
+    confirm: bool = typer.Option(True, "--confirm/--no-confirm", help="是否确认"),
     output_json: bool = typer.Option(False, "--json", "-j", help="输出 JSON 格式结果（含路径映射）"),
 ):
     """解压压缩包，支持批量操作和路径映射导出"""
+    check_bz()
+    
     collected: List[Path] = []
     
     # 从剪贴板读取
@@ -81,12 +96,16 @@ def extract(
     collected = filter_archives(collected)
     
     if not collected:
-        console.print("[red]没有有效的压缩包路径[/red]")
+        console.print("[yellow]没有有效的压缩包路径[/yellow]")
         raise typer.Exit(1)
+    
+    # 解析解压模式
+    extract_mode = ExtractMode.AUTO if mode == "auto" else ExtractMode.NORMAL
+    mode_desc = "智能解压" if extract_mode == ExtractMode.AUTO else f"普通解压 (前缀: {prefix})"
     
     # 显示文件列表
     if not output_json:
-        table = Table(title=f"待解压 ({len(collected)} 个)", show_lines=False)
+        table = Table(title=f"待解压 ({len(collected)} 个) - {mode_desc}")
         table.add_column("#", justify="right", style="cyan", width=3)
         table.add_column("路径", style="magenta")
         for idx, p in enumerate(collected[:20], 1):
@@ -96,8 +115,9 @@ def extract(
         console.print(table)
     
     # 确认
-    if not yes and not output_json:
+    if confirm and not output_json:
         if not Confirm.ask("开始解压？", default=True):
+            console.print("[yellow]已取消[/yellow]")
             raise typer.Exit(0)
     
     # 执行解压
@@ -107,7 +127,9 @@ def extract(
         use_trash=trash,
         overwrite_mode=overwrite,
         parallel=parallel,
-        workers=workers
+        workers=workers,
+        extract_mode=extract_mode,
+        output_prefix=prefix
     )
     
     # 输出结果
@@ -140,11 +162,13 @@ def compress(
     output_dir: Optional[str] = typer.Option(None, "--output", "-o", help="输出目录"),
     delete: bool = typer.Option(True, "--delete/--keep", "-d/-k", help="压缩后删除源目录"),
     format: str = typer.Option("zip", "--format", "-f", help="压缩格式: zip/7z"),
-    yes: bool = typer.Option(False, "--yes", "-y", help="非交互模式"),
+    confirm: bool = typer.Option(True, "--confirm/--no-confirm", help="是否确认"),
 ):
     """压缩目录为压缩包"""
+    check_bz()
+    
     if not paths:
-        console.print("[red]请提供要压缩的目录路径[/red]")
+        console.print("[yellow]请提供要压缩的目录路径[/yellow]")
         raise typer.Exit(1)
     
     mappings: List[PathMapping] = []
@@ -166,11 +190,11 @@ def compress(
         ))
     
     if not mappings:
-        console.print("[red]没有有效的目录[/red]")
+        console.print("[yellow]没有有效的目录[/yellow]")
         raise typer.Exit(1)
     
     # 显示列表
-    table = Table(title=f"待压缩 ({len(mappings)} 个)", show_lines=False)
+    table = Table(title=f"待压缩 ({len(mappings)} 个)")
     table.add_column("源目录", style="cyan")
     table.add_column("→", style="dim")
     table.add_column("目标", style="green")
@@ -184,8 +208,9 @@ def compress(
         table.add_row("...", "", f"还有 {len(mappings) - 10} 个")
     console.print(table)
     
-    if not yes:
+    if confirm:
         if not Confirm.ask("开始压缩？", default=True):
+            console.print("[yellow]已取消[/yellow]")
             raise typer.Exit(0)
     
     result = compress_batch(
@@ -201,9 +226,9 @@ def compress(
 @app.command("repack", help="根据路径映射重新压缩")
 def repack(
     mapping_file: Optional[str] = typer.Argument(None, help="路径映射 JSON 文件"),
-    clipboard: bool = typer.Option(False, "--clipboard", "-c", help="从剪贴板读取映射 JSON"),
+    clipboard: bool = typer.Option(False, "--clipboard", "--clip", help="从剪贴板读取映射 JSON"),
     delete: bool = typer.Option(True, "--delete/--keep", "-d/-k", help="压缩后删除源目录"),
-    yes: bool = typer.Option(False, "--yes", "-y", help="非交互模式"),
+    confirm: bool = typer.Option(True, "--confirm/--no-confirm", help="是否确认"),
 ):
     """
     根据路径映射重新压缩（恢复原始压缩包）
@@ -216,6 +241,8 @@ def repack(
         ]
     }
     """
+    check_bz()
+    
     mapping_json = None
     
     # 从剪贴板读取
@@ -236,7 +263,7 @@ def repack(
             raise typer.Exit(1)
     
     else:
-        console.print("[red]请提供映射文件或使用 --clipboard[/red]")
+        console.print("[yellow]请提供映射文件或使用 --clipboard[/yellow]")
         raise typer.Exit(1)
     
     # 解析 JSON
@@ -262,20 +289,20 @@ def repack(
         raise typer.Exit(1)
     
     if not mappings:
-        console.print("[red]没有有效的映射[/red]")
+        console.print("[yellow]没有有效的映射[/yellow]")
         raise typer.Exit(1)
     
     # 过滤存在的源目录
     valid_mappings = [m for m in mappings if Path(m.extracted_path).exists()]
     
     if not valid_mappings:
-        console.print("[red]没有存在的源目录[/red]")
+        console.print("[yellow]没有存在的源目录[/yellow]")
         raise typer.Exit(1)
     
     console.print(f"[cyan]找到 {len(valid_mappings)}/{len(mappings)} 个有效映射[/cyan]")
     
     # 显示列表
-    table = Table(title="待重新压缩", show_lines=False)
+    table = Table(title="待重新压缩")
     table.add_column("源目录", style="cyan")
     table.add_column("→", style="dim")
     table.add_column("目标压缩包", style="green")
@@ -289,8 +316,9 @@ def repack(
         table.add_row("...", "", f"还有 {len(valid_mappings) - 10} 个")
     console.print(table)
     
-    if not yes:
+    if confirm:
         if not Confirm.ask("开始重新压缩？", default=True):
+            console.print("[yellow]已取消[/yellow]")
             raise typer.Exit(0)
     
     result = compress_batch(
@@ -309,7 +337,11 @@ def main(
 ):
     """bandia - 批量解压/压缩工具"""
     if version:
-        console.print("bandia v2.0.0")
+        console.print(Panel.fit(
+            "[bold cyan]bandia[/bold cyan] v2.1.0\n"
+            "[dim]批量解压/压缩工具 - 使用 Bandizip[/dim]",
+            border_style="cyan"
+        ))
         raise typer.Exit(0)
     
     # 如果没有子命令，默认执行 extract（兼容旧行为）
