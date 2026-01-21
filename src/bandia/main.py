@@ -61,6 +61,7 @@ class ExtractResult:
     duration: float = 0.0
     file_size: int = 0  # 压缩包大小 (bytes)
     error: str = ""
+    output_path: Optional[Path] = None  # 解压后的实际目录路径
 
 
 
@@ -259,6 +260,81 @@ def filter_archives(paths: List[Path]) -> List[Path]:
     return [p for p in paths if p.suffix.lower() in ARCHIVE_EXTENSIONS]
 
 
+def _get_output_path(archive: Path, bz_path: Path) -> Optional[Path]:
+    """
+    计算 Bandizip -target:auto 的实际输出目录
+    
+    Bandizip 的 -target:auto 行为:
+    - 如果压缩包内只有一个根目录，则解压到同级目录（即那个根目录）
+    - 如果压缩包内有多个文件/目录，则创建与压缩包同名的目录
+    
+    Args:
+        archive: 压缩包路径
+        bz_path: Bandizip 可执行文件路径
+        
+    Returns:
+        预期的输出目录路径，如果无法确定则返回 None
+    """
+    try:
+        # 使用 bz.exe l 命令列出压缩包内容
+        cmd = [str(bz_path), "l", str(archive)]
+        proc = subprocess.run(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+        )
+        
+        if proc.returncode != 0:
+            logger.debug(f"列出压缩包内容失败: {archive}")
+            return None
+        
+        # 解析输出，提取根级别的目录/文件
+        lines = proc.stdout.strip().split('\n')
+        root_items = set()
+        
+        for line in lines:
+            # Bandizip l 输出格式: 每行包含文件信息，路径在最后
+            # 需要提取路径部分并获取根目录
+            line = line.strip()
+            if not line:
+                continue
+            
+            # 跳过标题行和分隔行
+            if line.startswith('-') or line.startswith('Date') or line.startswith('Attr'):
+                continue
+            
+            # 尝试从行尾提取路径（Bandizip 格式：属性 大小 日期 时间 路径）
+            parts = line.split()
+            if len(parts) >= 5:
+                # 路径可能包含空格，从第5个字段开始拼接
+                path_part = ' '.join(parts[4:])
+                # 获取根级别目录/文件名
+                root = path_part.split('/')[0].split('\\')[0]
+                if root:
+                    root_items.add(root)
+        
+        parent_dir = archive.parent
+        archive_stem = archive.stem  # 不含扩展名的文件名
+        
+        # 判断输出路径
+        if len(root_items) == 1:
+            # 只有一个根目录，输出到该目录
+            single_root = list(root_items)[0]
+            output = parent_dir / single_root
+        else:
+            # 多个根项，创建与压缩包同名的目录
+            output = parent_dir / archive_stem
+        
+        return output
+        
+    except Exception as e:
+        logger.debug(f"计算输出路径失败 {archive}: {e}")
+        return None
+
+
 # ============ 核心解压函数 ============
 
 def extract_single(
@@ -297,6 +373,9 @@ def extract_single(
     except Exception:
         file_size = 0
     
+    # 在解压前计算预期输出路径
+    output_path = _get_output_path(archive, bz_path)
+    
     mode_flags = {"overwrite": "-aoa", "skip": "-aos", "rename": "-aou"}
     conflict_flag = mode_flags.get(overwrite_mode, "-aoa")
     
@@ -331,7 +410,7 @@ def extract_single(
         except Exception as e:
             logger.warning(f"删除失败 {archive.name}: {e}")
     
-    return ExtractResult(archive, True, duration, file_size)
+    return ExtractResult(archive, True, duration, file_size, "", output_path)
 
 
 

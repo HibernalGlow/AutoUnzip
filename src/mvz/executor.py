@@ -79,15 +79,15 @@ def delete_files(
     internal_paths: List[str],
     dry_run: bool = True,
 ) -> ExecutionResult:
-    """Delete files from an archive.
+    """删除压缩包内的文件
     
     Args:
-        archive_path: Path to the archive
-        internal_paths: List of internal paths to delete
-        dry_run: If True, only show what would be done
+        archive_path: 压缩包路径
+        internal_paths: 要删除的内部路径列表
+        dry_run: 如果为 True，仅显示将要执行的操作
     
     Returns:
-        ExecutionResult with operation status
+        ExecutionResult，包含操作状态
     """
     if not os.path.isfile(archive_path):
         return ExecutionResult(
@@ -97,7 +97,7 @@ def delete_files(
             internal_paths=internal_paths,
         )
     
-    # Build 7z delete command: 7z d archive.zip file1 file2 ...
+    # 构建 7z 删除命令: 7z d archive.zip file1 file2 ...
     args = ["d", archive_path] + internal_paths
     cmd_str = f"7z d \"{archive_path}\" " + " ".join(f'"{p}"' for p in internal_paths)
     
@@ -112,7 +112,9 @@ def delete_files(
     
     retcode, stdout, stderr = run_7z(args)
     
-    if retcode == 0:
+    # 7z 返回码: 0=成功, 1=警告(但操作可能成功), 2+=错误
+    # 对于删除操作，返回码 0 或 1 都认为是成功
+    if retcode in (0, 1):
         return ExecutionResult(
             success=True,
             message=f"Deleted {len(internal_paths)} file(s) from {Path(archive_path).name}",

@@ -1,11 +1,16 @@
 """File information and archive listing."""
 
 import os
+import re
+import stat
 import tarfile
 import zipfile
 from datetime import datetime, time as time_type
 from pathlib import Path
-from typing import Iterator, Optional
+from typing import Iterator, Optional, List, Dict, Tuple
+
+# 缓存容器统计信息: (container_path, exts_tuple) -> avg_size
+_container_stats_cache: Dict[Tuple[str, Tuple[str, ...]], int] = {}
 
 from ..filter.size import format_size
 from ..filter.value import Value, number_value, text_value
@@ -212,10 +217,82 @@ class FileInfo:
             elif name_lower == "aspect":
                 dims = self._get_image_dimensions()
                 return number_value(int(dims.aspect_ratio * 100) / 100) if dims else None
+            
+            # ========== 容器统计字段 ==========
+            elif name_lower == "avg_img_size":
+                # 图片默认扩展名
+                img_exts = ("jpg", "jpeg", "png", "gif", "webp", "bmp", "svg")
+                return number_value(self._get_avg_size_of_container(img_exts))
+            elif name_lower == "avg_vid_size":
+                # 视频默认扩展名
+                vid_exts = ("mp4", "mkv", "avi", "mov", "wmv", "flv", "webm")
+                return number_value(self._get_avg_size_of_container(vid_exts))
+            elif name_lower.startswith("avg_size_"):
+                # 动态指定扩展名，如 avg_size_jpg_png
+                exts = tuple(name_lower[9:].split("_"))
+                return number_value(self._get_avg_size_of_container(exts))
             else:
                 return None
         
         return getter
+
+    def _get_avg_size_of_container(self, exts: tuple) -> int:
+        """
+        获取当前文件所在容器（或自身，若是目录/压缩包）中指定格式文件的平均大小
+        """
+        # 1. 确定搜索目标路径
+        container_path = self.container or ""
+        
+        # 如果当前文件本身就是压缩包或目录，且我们想查它内部的平均值
+        if not container_path:
+            if self.file_type == "dir":
+                container_path = self.path
+            elif self.archive or self.name.lower().endswith((".zip", ".7z", ".rar", ".tar")):
+                container_path = self.path
+        
+        if not container_path:
+            return 0
+            
+        # 2. 检查缓存
+        exts_key = tuple(sorted(list(exts)))
+        cache_key = (container_path, exts_key)
+        
+        if cache_key in _container_stats_cache:
+            return _container_stats_cache[cache_key]
+            
+        # 3. 获取内容并统计
+        try:
+            total_size = 0
+            count = 0
+            
+            if os.path.isdir(container_path):
+                # 目录：仅列出顶层文件（暂不支持递归以保证性能）
+                for name in os.listdir(container_path):
+                    if name.split('.')[-1].lower() in exts:
+                        p = os.path.join(container_path, name)
+                        try:
+                            st = os.stat(p)
+                            if stat.S_ISREG(st.st_mode):
+                                total_size += st.st_size
+                                count += 1
+                        except OSError:
+                            pass
+            else:
+                # 压缩包
+                files = list_files_in_archive(container_path)
+                if files:
+                    for f in files:
+                        if f.name.split('.')[-1].lower() in exts:
+                            total_size += f.size
+                            count += 1
+            
+            avg_size = int(total_size / count) if count > 0 else 0
+            _container_stats_cache[cache_key] = avg_size
+            return avg_size
+            
+        except Exception:
+            _container_stats_cache[cache_key] = 0
+            return 0
     
     def _get_ext2(self) -> str:
         """Get the two-part extension (e.g., 'tar.gz')."""
