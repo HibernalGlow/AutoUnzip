@@ -4,6 +4,7 @@ import csv
 import json
 import os
 import sys
+import datetime as _dt
 from contextlib import nullcontext
 from datetime import datetime
 from pathlib import Path
@@ -395,11 +396,88 @@ def search_nested_archives(
     _handle_save_output(output_content, save_output, ask_save)
 
 
+# ==================== EFU 格式支持 ====================
+
+_FILETIME_EPOCH = _dt.datetime(1601, 1, 1, tzinfo=_dt.timezone.utc)
+
+
+def _to_filetime(dt: datetime) -> int:
+    """将 datetime 转换为 Windows FILETIME（100纳秒单位，自1601-01-01起）"""
+    if dt is None:
+        return 0
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=_dt.timezone.utc)
+    return int((dt - _FILETIME_EPOCH).total_seconds() * 10_000_000)
+
+
+def _write_efu(
+    file_list: List[Dict[str, Any]],
+    file_path: str,
+) -> int:
+    """将搜索结果写入 EFU 文件列表（Everything File List）
+    
+    EFU 格式：UTF-8 CSV，列：Filename, Size, Date Modified, Date Created, Attributes
+    返回写入的文件数量
+    """
+    written = 0
+    with open(file_path, "w", encoding="utf-8", newline="") as f:
+        writer = csv.writer(f)
+        writer.writerow(["Filename", "Size", "Date Modified", "Date Created", "Attributes"])
+        for item in file_list:
+            # 跳过压缩包内部文件（没有真实磁盘路径）
+            if item.get("container"):
+                continue
+            fpath = item.get("path", "")
+            if not fpath:
+                continue
+            size = item.get("size", 0) or 0
+            date_modified = 0
+            date_created = 0
+            attributes = 32  # FILE_ATTRIBUTE_ARCHIVE 默认值
+            try:
+                st = os.stat(fpath)
+                size = st.st_size
+                date_modified = _to_filetime(
+                    _dt.datetime.fromtimestamp(st.st_mtime, tz=_dt.timezone.utc)
+                )
+                date_created = _to_filetime(
+                    _dt.datetime.fromtimestamp(st.st_ctime, tz=_dt.timezone.utc)
+                )
+                attributes = int(st.st_file_attributes) if hasattr(st, "st_file_attributes") else 32
+            except Exception:
+                pass
+            writer.writerow([fpath, size, date_modified, date_created, attributes])
+            written += 1
+    return written
+
+
+def _open_in_everything(file_path: str) -> None:
+    """用 Everything 打开文件列表"""
+    import shutil
+    import subprocess
+    everything = shutil.which("Everything") or shutil.which("everything")
+    if not everything:
+        # 常见安装路径兜底
+        for candidate in [
+            r"C:\Program Files\Everything\Everything.exe",
+            r"C:\Program Files (x86)\Everything\Everything.exe",
+        ]:
+            if Path(candidate).exists():
+                everything = candidate
+                break
+    if everything:
+        subprocess.Popen([everything, "-filelist", file_path])
+        console.print(f"[bold green]✓[/bold green] 已在 Everything 中打开: {file_path}")
+    else:
+        console.print("[bold yellow]警告:[/bold yellow] 未找到 Everything，请手动打开文件")
+
+
 def _handle_save_output(
     output_content: Union[str, set],
     save_output: Optional[str],
     ask_save: bool,
     is_csv: bool = False,
+    open_result: bool = False,
 ) -> None:
     """处理保存输出到文件
     
@@ -408,6 +486,7 @@ def _handle_save_output(
         save_output: 输出文件路径（如果提供）
         ask_save: 是否询问用户是否保存
         is_csv: 是否为CSV格式
+        open_result: 保存后是否用 Everything 打开
     """
     # 如果是集合，转换为字符串
     if isinstance(output_content, set):
@@ -425,7 +504,7 @@ def _handle_save_output(
         
         should_save = Confirm.ask("\n[bold cyan]是否保存结果到文件?[/bold cyan]")
         if should_save:
-            default_ext = ".csv" if is_csv else ".txt"
+            default_ext = ".csv" if is_csv else ".efl"
             file_path = Prompt.ask(
                 "[bold cyan]请输入文件名[/bold cyan]",
                 default=f"findz_results{default_ext}"
@@ -437,6 +516,8 @@ def _handle_save_output(
             with open(file_path, "w", encoding="utf-8") as f:
                 f.write(output_content)
             console.print(f"[bold green]✓[/bold green] 结果已保存到: {file_path}")
+            if open_result:
+                _open_in_everything(str(Path(file_path).resolve()))
         except Exception as e:
             console.print(f"[bold red]保存文件错误:[/bold red] {e}")
 
@@ -453,18 +534,24 @@ def execute_search(
     no_archive: bool,
     archives_only: bool,
     print_zero: bool,
+    efu_output: bool = False,
     save_output: Optional[str] = None,
     ask_save: bool = False,
     continue_on_error: bool = True,
     no_cache: bool = False,
     silent: bool = False,
     workers: int = None,
+    open_result: bool = False,
 ) -> Optional[List[Dict[str, Any]]]:
     """执行文件搜索（CLI 包装函数，调用 api.search）
     
     Returns:
         搜索结果列表（字典格式），用于后续分组处理
     """
+    # EFU 模式强制禁用压缩包（压缩包内文件没有真实路径）
+    if efu_output and not no_archive:
+        console.print("[dim]EFU 模式：自动跳过压缩包内部文件[/dim]")
+        no_archive = True
     # Line separator
     line_sep = "\0" if print_zero else "\n"
     
@@ -564,7 +651,7 @@ def execute_search(
             
             output_content = json.dumps(archive_list, ensure_ascii=False, indent=2)
             console.print(output_content)
-            _handle_save_output(output_content, save_output, ask_save, False)
+            _handle_save_output(output_content, save_output, ask_save, False, open_result)
             return all_results_dict
 
         # Prepare output lines
@@ -585,7 +672,7 @@ def execute_search(
 
         # Handle save
         output_content = "\n".join(out_lines)
-        _handle_save_output(output_content, save_output, ask_save, False)
+        _handle_save_output(output_content, save_output, ask_save, False, open_result)
 
         # finished
         return all_results_dict
@@ -598,7 +685,7 @@ def execute_search(
     if json_output:
         output_content = json.dumps(all_results_dict, ensure_ascii=False, indent=2)
         console.print(output_content)
-        _handle_save_output(output_content, save_output, ask_save, False)
+        _handle_save_output(output_content, save_output, ask_save, False, open_result)
         return all_results_dict
 
     # Display results count
@@ -649,12 +736,31 @@ def execute_search(
             output_lines.append(line)
     
     # Handle save output
-    if csv_output or csv_no_head:
+    if efu_output:
+        # EFU 格式：询问/确定文件路径后直接写入
+        efu_path = save_output
+        if ask_save and not efu_path:
+            from rich.prompt import Confirm, Prompt
+            if Confirm.ask("\n[bold cyan]是否保存为 EFU 文件列表?[/bold cyan]"):
+                efu_path = Prompt.ask(
+                    "[bold cyan]请输入文件名[/bold cyan]",
+                    default="findz_results.efu"
+                )
+        if efu_path:
+            try:
+                count = _write_efu(all_results_dict, efu_path)
+                abs_path = str(Path(efu_path).resolve())
+                console.print(f"[bold green]✓[/bold green] EFU 已保存: {abs_path} ({count} 个文件)")
+                if open_result:
+                    _open_in_everything(abs_path)
+            except Exception as e:
+                console.print(f"[bold red]EFU 保存失败:[/bold red] {e}")
+    elif csv_output or csv_no_head:
         output_content = output_buffer.getvalue()
+        _handle_save_output(output_content, save_output, ask_save, True, open_result)
     else:
         output_content = line_sep.join(output_lines)
-    
-    _handle_save_output(output_content, save_output, ask_save, csv_output or csv_no_head)
+        _handle_save_output(output_content, save_output, ask_save, False, open_result)
     
     # Print errors
     if errors:
@@ -765,6 +871,17 @@ def main(
         "-o",
         "--output",
         help="将结果保存到指定文件"
+    ),
+    efu_output: bool = typer.Option(
+        False,
+        "--efu",
+        help="输出为 Everything File List (.efu) 格式（带大小、日期、属性的 CSV）"
+    ),
+    open_result: bool = typer.Option(
+        False,
+        "-O",
+        "--open",
+        help="保存后用 Everything 打开文件列表（需已安装 Everything）"
     ),
     ask_save: bool = typer.Option(
         False,
@@ -935,12 +1052,14 @@ def main(
         no_archive=no_archive,
         archives_only=archives_only,
         print_zero=print_zero,
+        efu_output=efu_output,
         save_output=save_output if not group_by else None,  # 如果要分组，先不保存
         ask_save=ask_save if not group_by else False,
         continue_on_error=continue_on_error,
         no_cache=no_result_cache,
         silent=bool(group_by),  # 如果要分组，静默搜索
         workers=workers,
+        open_result=open_result,
     )
     
     # 如果有分组参数，进行分组和二次筛选
